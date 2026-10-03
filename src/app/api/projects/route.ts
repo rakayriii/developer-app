@@ -5,6 +5,7 @@ import { getProjectIdentity } from "@/lib/projects/auth";
 import { projectError } from "@/lib/projects/errors";
 import { projectSlug, publicProject, validGithubAssociation, validProjectName, validProjectStatus } from "@/lib/projects/validation";
 import { getRepositoryDetail } from "@/lib/github/repository";
+import { resolveRepository } from "@/lib/git/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
   try {
     const identity = await getProjectIdentity();
     if (!identity) return unauthenticated();
-    const body = await request.json().catch(() => null) as { name?: unknown; description?: unknown; status?: unknown; githubOwner?: unknown; githubRepo?: unknown } | null;
+     const body = await request.json().catch(() => null) as { name?: unknown; description?: unknown; status?: unknown; githubOwner?: unknown; githubRepo?: unknown; localRepositoryPath?: unknown } | null;
     if (!body || !validProjectName(body.name)) return invalid("Project name is required and must be 1 to 80 characters.");
     if (body.description !== undefined && body.description !== null && (typeof body.description !== "string" || body.description.length > 500)) return invalid("Description must be 500 characters or fewer.");
     const status = body.status === undefined ? "active" : body.status;
@@ -44,8 +45,10 @@ export async function POST(request: Request) {
     if (!slug) return invalid("Project name must contain letters or numbers.");
     const duplicate = await prisma.project.findUnique({ where: { userId_slug: { userId: identity.userId, slug } } });
     if (duplicate) return NextResponse.json({ code: "duplicate_slug", message: "A project with this name already exists." }, { status: 409 });
-    if (owner && repo) await getRepositoryDetail(identity.accessToken, owner as string, repo as string);
-    const project = await prisma.project.create({ data: { userId: identity.userId, name: body.name.trim(), slug, description: typeof body.description === "string" ? body.description.trim() || null : null, status: status as ProjectStatus, githubOwner: owner as string | null, githubRepo: repo as string | null } });
+     if (owner && repo) await getRepositoryDetail(identity.accessToken, owner as string, repo as string);
+     let localRepositoryPath: string | null = null;
+     if (body.localRepositoryPath !== undefined && body.localRepositoryPath !== null) { if (typeof body.localRepositoryPath !== "string") return invalid("Local repository path must be relative to GIT_WORKSPACE_ROOT."); const resolved = await resolveRepository(body.localRepositoryPath); localRepositoryPath = body.localRepositoryPath.trim() || "."; void resolved; }
+     const project = await prisma.project.create({ data: { userId: identity.userId, name: body.name.trim(), slug, description: typeof body.description === "string" ? body.description.trim() || null : null, status: status as ProjectStatus, githubOwner: owner as string | null, githubRepo: repo as string | null, localRepositoryPath } });
     return NextResponse.json({ project: publicProject(project) }, { status: 201 });
   } catch (error) { return projectError(error); }
 }

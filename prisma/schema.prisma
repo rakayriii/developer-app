@@ -13,6 +13,24 @@ enum ProjectStatus {
   archived
 }
 
+enum DeploymentEnvironmentType {
+  development
+  staging
+  production
+}
+
+enum DeploymentStatus {
+  pending
+  building
+  starting
+  running
+  unhealthy
+  failed
+  stopping
+  stopped
+  rolled_back
+}
+
 model User {
   id          String    @id @default(cuid())
   githubLogin String    @unique
@@ -31,12 +49,77 @@ model Project {
   status             ProjectStatus            @default(active)
   githubOwner        String?
   githubRepo         String?
+  localRepositoryPath String?
   dockerAssociations ProjectDockerContainer[]
+  environments       DeploymentEnvironment[]
+  deployments         Deployment[]
   createdAt          DateTime                 @default(now())
   updatedAt          DateTime                 @updatedAt
 
   @@unique([userId, slug])
   @@index([userId, status])
+}
+
+model DeploymentEnvironment {
+  id                 String                    @id @default(cuid())
+  projectId          String
+  project            Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name               String
+  slug               String
+  type               DeploymentEnvironmentType
+  containerPort      Int                       @default(3000)
+  hostPort           Int
+  healthPath         String                    @default("/")
+  healthTimeoutMs    Int                       @default(5000)
+  healthRetries      Int                       @default(5)
+  cpuLimit           String                    @default("1.0")
+  memoryLimit        String                    @default("512m")
+  restartPolicy      String                    @default("unless-stopped")
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  deployments        Deployment[]
+
+  @@unique([projectId, slug])
+  @@unique([hostPort])
+  @@index([projectId, type])
+}
+
+model Deployment {
+  id            String              @id @default(cuid())
+  projectId     String
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  environmentId String
+  environment   DeploymentEnvironment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  commitSha     String
+  branch        String?
+  imageTag      String
+  dockerfile    String?
+  containerId   String?
+  containerName String?
+  status        DeploymentStatus    @default(pending)
+  healthStatus  String?
+  errorMessage  String?
+  rollbackOfId  String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  logs          DeploymentLog[]
+
+  @@index([projectId, createdAt])
+  @@index([environmentId, status])
+  @@index([containerId])
+}
+
+model DeploymentLog {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  timestamp    DateTime   @default(now())
+  stream       String
+  message      String
+
+  @@index([deploymentId, timestamp])
 }
 
 model ProjectDockerContainer {

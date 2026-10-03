@@ -22,7 +22,9 @@ export default function TerminalWorkspace() {
 
   useEffect(() => {
     if (!terminalElement.current) return;
-    const instance = new Terminal({ cursorBlink: true, convertEol: false, fontFamily: "var(--font-geist-mono), monospace", fontSize: 13, theme: { background: "#101112", foreground: "#e5e7e9", cursor: "#75aef2", selectionBackground: "#29496f" }, scrollback: 5000 });
+    const tokens = getComputedStyle(document.querySelector(".app-shell") || document.documentElement);
+    const token = (name: string, fallback: string) => tokens.getPropertyValue(name).trim() || fallback;
+    const instance = new Terminal({ cursorBlink: true, convertEol: false, fontFamily: "var(--font-geist-mono), monospace", fontSize: 13, theme: { background: token("--bg", "#0b0d0f"), foreground: token("--text", "#f2f4f7"), cursor: token("--blue", "#8ab4ff"), selectionBackground: token("--blue-bg", "#1a2940") }, scrollback: 5000 });
     const addon = new FitAddon();
     instance.loadAddon(addon);
     instance.open(terminalElement.current);

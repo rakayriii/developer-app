@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { execFile } from "node:child_process";
 
 type DockerResponse<T> = { statusCode: number; body: T };
 
@@ -6,10 +7,56 @@ export type DockerInfo = { serverVersion: string; apiVersion: string; containers
 export type DockerContainer = { id: string; name: string; image: string; status: string; state: string; created: string; ports: string };
 
 class DockerError extends Error {
-  constructor(public code: "unavailable" | "permission_denied" | "timeout" | "malformed" | "http", message: string, public status = 503) { super(message); }
+  public code: "unavailable" | "permission_denied" | "timeout" | "malformed" | "http";
+  public status: number;
+
+  constructor(code: "unavailable" | "permission_denied" | "timeout" | "malformed" | "http", message: string, status = 503) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
 }
 
 export { DockerError };
+
+export const DEFAULT_DEPLOYMENT_DOCKER_TIMEOUT_MS = 600000;
+export const MAX_DEPLOYMENT_DOCKER_TIMEOUT_MS = 600000;
+export const MIN_DEPLOYMENT_DOCKER_TIMEOUT_MS = 1000;
+
+export function deploymentDockerTimeoutMs() {
+  const configured = Number(process.env.DEPLOYMENT_DOCKER_TIMEOUT_MS || DEFAULT_DEPLOYMENT_DOCKER_TIMEOUT_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_DEPLOYMENT_DOCKER_TIMEOUT_MS;
+  return Math.min(MAX_DEPLOYMENT_DOCKER_TIMEOUT_MS, Math.max(MIN_DEPLOYMENT_DOCKER_TIMEOUT_MS, Math.floor(configured)));
+}
+
+type ProcessOptions = { maxBuffer: number; timeout: number; onOutput?: (chunk: string) => void; env?: NodeJS.ProcessEnv };
+export function runSafeProcess(file: string, args: string[], options: ProcessOptions) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const child = execFile(file, args, { shell: false, timeout: 0, maxBuffer: options.maxBuffer, env: options.env || process.env }, (error, output, errorOutput) => {
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      stdout += output || "";
+      stderr += errorOutput || "";
+      if (timedOut) { reject(new DockerError("timeout", "Docker operation timed out.", 504)); return; }
+      if (error) { reject(error); return; }
+      resolve({ stdout, stderr });
+    });
+    const emit = (chunk: Buffer, stream: "stdout" | "stderr") => { const text = chunk.toString(); if (stream === "stdout") stdout += text; else stderr += text; options.onOutput?.(text); if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > options.maxBuffer) child.kill("SIGTERM"); };
+    child.stdout?.on("data", (chunk: Buffer) => emit(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: Buffer) => emit(chunk, "stderr"));
+    const timeoutTimer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 5000); }, options.timeout);
+    child.once("close", () => clearTimeout(timeoutTimer));
+  });
+}
+
+export async function runDockerCommand(args: string[], maxBuffer = 4 * 1024 * 1024, timeout = deploymentDockerTimeoutMs(), onOutput?: (chunk: string) => void) {
+  const host = process.env.DOCKER_SOCKET_PATH;
+  try { return await runSafeProcess("docker", [...(host ? ["-H", `unix://${host}`] : []), ...args], { shell: false, timeout, maxBuffer, onOutput, env: { ...process.env, DOCKER_BUILDKIT: "1", GIT_TERMINAL_PROMPT: "0" } } as ProcessOptions); }
+  catch (error) { const value = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string; killed?: boolean; code?: string }; const output = `${value.stdout || ""}${value.stderr || ""}`.trim(); if (error instanceof DockerError) throw error; if (value.code === "ENOENT") throw new DockerError("unavailable", "Docker CLI is not available.", 503); if (value.killed || value.code === "ETIMEDOUT") throw new DockerError("timeout", "Docker operation timed out.", 504); throw new DockerError("http", output.split("\n").filter(Boolean).slice(-1)[0] || "Docker operation failed.", 409); }
+}
 
 function socketPath() {
   return process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock";

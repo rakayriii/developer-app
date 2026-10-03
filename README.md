@@ -54,6 +54,20 @@ Supported read operations include status, branches, history, diffs, and redacted
 
 Git routes require the existing authenticated GitHub session. Git state is derived from the repository and is not persisted in PostgreSQL. Git pull and checkout refuse dirty or conflicted working trees so local changes are not silently discarded. Diff responses are bounded and report truncation.
 
+## Deployment and environments
+
+Phase 8 provides local Docker deployments only. Projects may reference a validated local Git repository under `GIT_WORKSPACE_ROOT`. Each project can have development, staging, and production environments with server-validated ports, health paths, CPU limits, memory limits, and restart policy.
+
+Deployment builds the repository's existing supported Dockerfile with a server-generated immutable image tag, starts a bounded container, and checks its configured HTTP endpoint before activating it. Docker operations default to a bounded 10-minute timeout and can be adjusted server-side with `DEPLOYMENT_DOCKER_TIMEOUT_MS`, capped at 600000 milliseconds. Build output is streamed into bounded deployment logs, and timed-out child processes are terminated. The previous running deployment remains in place until the replacement is healthy. Failed builds and health checks preserve the previous deployment. Rollback starts the previous successful image and performs the same health check before switching traffic.
+
+Deployment mutations use the existing GitHub session and project ownership checks, and are serialized per project/environment. Containers are created with no privileged mode, no host networking, no mounts, no Docker socket, bounded CPU/memory/PIDs, and server-generated names. Only deployment-owned containers can be stopped or replaced. External deployment providers, arbitrary Docker arguments, force operations, and deployment secrets are not supported.
+
+Deployment APIs are available under `/api/deployments` and `/api/projects/[id]/environments`; the UI is available at `/deployments`. Logs are persisted with bounded line and total history limits. PostgreSQL migrations are required before using deployment persistence:
+
+```bash
+npm run db:migrate
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

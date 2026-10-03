@@ -1,0 +1,7 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { createDeployment } from "@/lib/deployments/service";
+import { deploymentError, deploymentIdentity, forbidden, invalid, notAuthenticated } from "@/lib/deployments/api";
+export const runtime = "nodejs"; export const dynamic = "force-dynamic";
+export async function GET() { try { const identity = await deploymentIdentity(); if (!identity) return notAuthenticated(); const items = await prisma.deployment.findMany({ where: { project: { userId: identity.userId } }, include: { project: { select: { id: true, name: true, slug: true } }, environment: true }, orderBy: { createdAt: "desc" }, take: 100 }); return NextResponse.json(items); } catch (error) { return deploymentError(error); } }
+export async function POST(request: Request) { try { const identity = await deploymentIdentity(); if (!identity) return notAuthenticated(); const body = await request.json().catch(() => null) as { projectId?: unknown; environmentId?: unknown } | null; if (!body || typeof body.projectId !== "string" || typeof body.environmentId !== "string") return invalid("projectId and environmentId are required."); const environment = await prisma.deploymentEnvironment.findFirst({ where: { id: body.environmentId, projectId: body.projectId, project: { userId: identity.userId } } }); if (!environment) return forbidden(); const deployment = await createDeployment(body.projectId, body.environmentId); return NextResponse.json(deployment, { status: 201 }); } catch (error) { return deploymentError(error); } }
