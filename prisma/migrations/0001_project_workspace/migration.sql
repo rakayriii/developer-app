@@ -1,0 +1,11 @@
+CREATE TYPE "ProjectStatus" AS ENUM ('active', 'paused', 'archived');
+CREATE TABLE "User" ("id" TEXT NOT NULL, "githubLogin" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "User_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "Project" ("id" TEXT NOT NULL, "userId" TEXT NOT NULL, "name" TEXT NOT NULL, "slug" TEXT NOT NULL, "description" TEXT, "status" "ProjectStatus" NOT NULL DEFAULT 'active', "githubOwner" TEXT, "githubRepo" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "Project_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "ProjectDockerContainer" ("id" TEXT NOT NULL, "projectId" TEXT NOT NULL, "containerId" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "ProjectDockerContainer_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "User_githubLogin_key" ON "User"("githubLogin");
+CREATE UNIQUE INDEX "Project_userId_slug_key" ON "Project"("userId", "slug");
+CREATE INDEX "Project_userId_status_idx" ON "Project"("userId", "status");
+CREATE UNIQUE INDEX "ProjectDockerContainer_projectId_containerId_key" ON "ProjectDockerContainer"("projectId", "containerId");
+CREATE INDEX "ProjectDockerContainer_projectId_idx" ON "ProjectDockerContainer"("projectId");
+ALTER TABLE "Project" ADD CONSTRAINT "Project_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ProjectDockerContainer" ADD CONSTRAINT "ProjectDockerContainer_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;

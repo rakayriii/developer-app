@@ -1,0 +1,12 @@
+import { runGit } from "./runner.ts";
+import type { GitFileStatus, GitStatus } from "./types.ts";
+import { getRemoteMetadata } from "./remote.ts";
+
+function file(path: string, code: string, originalPath?: string): GitFileStatus { const stagedState = code[0] || " "; const workingTreeState = code[1] || " "; return { path, status: stagedState === "?" || workingTreeState === "?" ? "untracked" : stagedState === "R" || workingTreeState === "R" ? "renamed" : stagedState === "C" || workingTreeState === "C" ? "copied" : stagedState === "D" || workingTreeState === "D" ? "deleted" : stagedState === "A" || workingTreeState === "A" ? "added" : "modified", stagedState, workingTreeState, originalPath }; }
+export async function getGitStatus(repositoryRoot: string): Promise<GitStatus> {
+  const result = await runGit(["status", "--short", "--branch", "-z"], repositoryRoot); const parts = result.stdout.split("\0").filter(Boolean); const header = parts.shift() || ""; const branchMatch = /^## (.+?)(?:\.\.\.(\S+))?(?: \[ahead (\d+)(?:, behind (\d+))?|, behind (\d+)\])?$/.exec(header); const branchValue = branchMatch?.[1] || null; const detached = branchValue === "HEAD" || branchValue?.startsWith("HEAD ") || branchValue === "(no branch)"; const branch = detached ? null : branchValue; const upstream = branchMatch?.[2] || null; const ahead = Number(branchMatch?.[3] || 0); const behind = Number(branchMatch?.[4] || branchMatch?.[5] || 0); const all: GitFileStatus[] = [];
+  for (let index = 0; index < parts.length; index += 1) { const entry = parts[index]; const match = /^(.{2}) (.*)$/.exec(entry); if (!match) continue; let originalPath: string | undefined; if (match[1].includes("R") || match[1].includes("C")) originalPath = parts[++index]; all.push(file(match[2], match[1], originalPath)); }
+  const conflictedFiles = all.filter((item) => ["U", "A", "D"].includes(item.stagedState) && ["U", "A", "D"].includes(item.workingTreeState) && item.stagedState !== " " && item.workingTreeState !== " ");
+  const stagedFiles = all.filter((item) => item.stagedState !== " " && item.stagedState !== "?" && !conflictedFiles.includes(item)); const unstagedFiles = all.filter((item) => item.workingTreeState !== " " && item.workingTreeState !== "?" && !conflictedFiles.includes(item)); const untrackedFiles = all.filter((item) => item.status === "untracked");
+  return { repositoryRoot, branch, detached, upstream, ahead, behind, stagedFiles, unstagedFiles, untrackedFiles, conflictedFiles, remotes: await getRemoteMetadata(repositoryRoot), clean: all.length === 0 };
+}

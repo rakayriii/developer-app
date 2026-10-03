@@ -1,0 +1,4 @@
+import { runGit } from "./runner.ts";
+import type { GitRemote } from "./types.ts";
+function redact(value: string) { try { const url = new URL(value); return { host: url.host, repository: `${url.pathname.replace(/^\//, "").replace(/\.git$/, "")}` }; } catch { const match = /^(?:[^@]+@)?([^:]+):(.+)$/.exec(value); return { host: match?.[1] || "unknown", repository: (match?.[2] || value).replace(/\.git$/, "") }; } }
+export async function getRemoteMetadata(repositoryRoot: string): Promise<GitRemote[]> { const result = await runGit(["remote", "-v"], repositoryRoot); const seen = new Set<string>(); return result.stdout.split("\n").flatMap((line) => { const match = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line); if (!match || seen.has(match[1])) return []; seen.add(match[1]); const safe = redact(match[2]); return [{ name: match[1], ...safe }]; }); }

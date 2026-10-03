@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  active
+  paused
+  archived
+}
+
+model User {
+  id          String    @id @default(cuid())
+  githubLogin String    @unique
+  projects    Project[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Project {
+  id                 String                   @id @default(cuid())
+  userId             String
+  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  slug               String
+  description        String?
+  status             ProjectStatus            @default(active)
+  githubOwner        String?
+  githubRepo         String?
+  dockerAssociations ProjectDockerContainer[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId, status])
+}
+
+model ProjectDockerContainer {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  containerId String
+  createdAt   DateTime @default(now())
+
+  @@unique([projectId, containerId])
+  @@index([projectId])
+}
