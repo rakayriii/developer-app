@@ -31,12 +31,79 @@ enum DeploymentStatus {
   rolled_back
 }
 
+enum ServerAuthMethod {
+  key
+}
+
+enum ServerStatus {
+  unknown
+  online
+  offline
+  error
+}
+
 model User {
   id          String    @id @default(cuid())
   githubLogin String    @unique
   projects    Project[]
+  servers     Server[]
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+model Server {
+  id                    String           @id @default(cuid())
+  userId                String
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                  String
+  hostname              String
+  port                  Int              @default(22)
+  username              String
+  authMethod            ServerAuthMethod @default(key)
+  encryptedCredential   String?
+  credentialFingerprint String?
+  credentialConfigured  Boolean          @default(false)
+  hostKeyFingerprint    String?
+  hostKeyLine           String?
+  hostKeyTrustedAt      DateTime?
+  status                ServerStatus     @default(unknown)
+  statusCode            String?
+  statusMessage         String?
+  osName                String?
+  osVersion             String?
+  architecture          String?
+  kernel                String?
+  dockerVersion         String?
+  dockerAvailable       Boolean          @default(false)
+  cpuCount              Int?
+  memoryBytes           BigInt?
+  diskBytes             BigInt?
+  diskFreeBytes         BigInt?
+  lastCheckedAt         DateTime?
+  lastConnectedAt       DateTime?
+  lastError             String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  checks                ServerCheck[]
+
+  @@unique([userId, hostname, port])
+  @@index([userId])
+  @@index([status])
+}
+
+model ServerCheck {
+  id                  String       @id @default(cuid())
+  serverId            String
+  server              Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  status              ServerStatus
+  code                String?
+  message             String?
+  hostKeyFingerprint  String?
+  hostKeyTrusted      Boolean      @default(false)
+  durationMs          Int?
+  createdAt           DateTime     @default(now())
+
+  @@index([serverId, createdAt])
 }
 
 model Project {
