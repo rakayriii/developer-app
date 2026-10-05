@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { groupLogsByStage, normalizeLogResponse } from "@/lib/deployments/logs";
 
 type Project = { id: string; name: string; slug: string; localRepositoryPath: string | null };
 type Environment = { id: string; name: string; slug: string; type: string; hostPort: number; containerPort: number; healthPath: string; healthTimeoutMs: number; healthRetries: number; cpuLimit: string; memoryLimit: string; runMigrations: boolean };
 type HistoryEntry = { id: string; status: string; healthStatus: string | null; commitSha: string; imageTag: string; dockerfile: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; errorMessage: string | null };
 type Detail = { id: string; status: string; healthStatus: string | null; lastStage: string | null; errorMessage: string | null; stopReason: string | null; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; containerId: string | null; containerName: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; startedAt: string | null; finishedAt: string | null; restartedAt: string | null; createdAt: string; project: Project; environment: Environment; healthUrl: string; appUrl: string | null; history: HistoryEntry[] };
 type Runtime = { owned: boolean; container: { state: string; running: boolean; health: string; restartCount: number; startedAt: string; image: string; restartPolicy: string; ports: string; cpuPercent: string; memoryUsage: string; memoryPercent: string } | null; runtimeVariableNames: string[]; secretNames?: string[] };
-type LogEntry = { id: string; timestamp: string; stage: string; severity: string; message: string };
+type LogEntry = ReturnType<typeof normalizeLogResponse>[number];
 type Candidate = { id: string; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; healthStatus: string | null; status: string; createdAt: string; finishedAt: string | null };
 type Section = "overview" | "runtime" | "logs" | "history" | "environment";
 
@@ -22,7 +23,6 @@ const uptime = (startedAt: string) => {
   const days = Math.floor(seconds / 86400); const hours = Math.floor((seconds % 86400) / 3600); const minutes = Math.floor((seconds % 3600) / 60);
   return [days ? `${days}d` : "", hours ? `${hours}h` : "", `${minutes}m`].filter(Boolean).join(" ");
 };
-const stageOrder = ["validation", "build", "container", "port", "release", "health", "runtime", "stop", "restart", "rollback"];
 
 export default function DeploymentDetail({ deploymentId }: { deploymentId: string }) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -43,7 +43,7 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
       if (!detailResponse.ok) throw new Error(detailBody.message || "Deployment could not be loaded.");
       setDetail(detailBody as Detail);
       if (runtimeResponse.ok) setRuntime(await runtimeResponse.json());
-      if (logResponse.ok) setLogs(((await logResponse.json()) as { entries: LogEntry[] }).entries);
+      if (logResponse.ok) setLogs(normalizeLogResponse(await logResponse.json()));
       setState("ready");
       setError("");
     } catch (reason) {
@@ -87,8 +87,7 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
 
   const container = runtime?.container ?? null;
   const containerFacts: [string, string][] = container ? [["Container state", container.state], ["Running", String(container.running)], ["Docker health", container.health], ["Uptime", uptime(container.startedAt)], ["Started at", time(container.startedAt)], ["Restart count", String(container.restartCount)], ["Restart policy", container.restartPolicy], ["Image", container.image], ["Port mapping", container.ports], ["CPU", container.cpuPercent], ["Memory", `${container.memoryUsage} (${container.memoryPercent})`]] : [];
-  const grouped = stageOrder.map((stage) => ({ stage, entries: logs.filter((entry) => entry.stage === stage) })).filter((group) => group.entries.length);
-  const other = logs.filter((entry) => !stageOrder.includes(entry.stage));
+  const { ordered: grouped, other } = groupLogsByStage(logs);
 
   return <div className="deployment-workspace">
     <div className="page-header">
