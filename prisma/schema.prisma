@@ -112,19 +112,24 @@ model Deployment {
   dockerfile    String?
   containerId   String?
   containerName String?
-  status        DeploymentStatus    @default(pending)
-  healthStatus  String?
-  errorMessage  String?
-  rollbackOfId  String?
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  logs          DeploymentLog[]
+  status          DeploymentStatus    @default(pending)
+  healthStatus    String?
+  errorMessage    String?
+  lastStage       String?
+  stopReason      String?
+  rollbackOfId    String?
+  rolledBackFromId String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  restartedAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  logs            DeploymentLog[]
 
   @@index([projectId, createdAt])
   @@index([environmentId, status])
   @@index([containerId])
+  @@index([rollbackOfId])
 }
 
 model DeploymentLog {

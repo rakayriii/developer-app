@@ -23,6 +23,34 @@ export async function execReleaseCommand(containerId: string, releaseCommand: st
 export async function stopOwnedContainer(containerId: string) { await docker(["stop", "--time", "10", containerId], 128 * 1024).catch(() => undefined); await docker(["rm", containerId], 128 * 1024).catch(() => undefined); }
 export async function containerExists(containerId: string) { try { await docker(["inspect", containerId], 128 * 1024); return true; } catch { return false; } }
 
+// Restarts only the supplied owned container. No flags are client-controlled.
+export async function restartOwnedContainer(containerId: string) { const result = await docker(["restart", "--time", "10", containerId], 256 * 1024, undefined, "Container restart"); return result.stdout.trim(); }
+
+// Ownership proof: the generated container name must still exist and must match the recorded one.
+export async function verifyOwnedContainer(expectedName: string) {
+  const names = await docker(["ps", "-a", "--filter", `name=^/${expectedName}$`, "--format", "{{.Names}}"], 128 * 1024).then((result) => result.stdout.split("\n").map((line) => line.trim()).filter(Boolean)).catch(() => [] as string[]);
+  return names.includes(expectedName);
+}
+
+export function containerInspectArguments(containerId: string) { return ["inspect", "--format", "{{json .}}", containerId]; }
+
+const runtimeFormat = "{{.State.Status}}|{{.State.Running}}|{{.State.Health.Status}}|{{.RestartCount}}|{{.State.StartedAt}}|{{.Config.Image}}|{{.HostConfig.RestartPolicy.Name}}|{{range $p, $conf := .NetworkSettings.Ports}}{{$p}}={{range $conf}}{{.HostIp}}:{{.HostPort}},{{end}} {{end}}";
+
+export type ContainerRuntime = { state: string; running: boolean; health: string; restartCount: number; startedAt: string; image: string; restartPolicy: string; ports: string; cpuPercent: string; memoryUsage: string; memoryPercent: string };
+
+// Bounded, allowlisted projection. Raw docker inspect output is never returned to the browser.
+export async function containerRuntime(containerId: string): Promise<ContainerRuntime | null> {
+  // docker can emit more than one line while a container is transitioning; only the first record is used.
+  const inspected = await docker(["inspect", "--format", runtimeFormat, containerId], 64 * 1024).then((result) => result.stdout.trim().split("\n")[0]).catch(() => "");
+  if (!inspected) return null;
+  const [state = "unknown", running = "false", health = "none", restartCount = "0", startedAt = "", image = "", restartPolicy = "", ports = ""] = inspected.split("|");
+  const stats = await docker(["stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}", containerId], 128 * 1024).then((result) => result.stdout.trim().split("\n")[0]).catch(() => "");
+  const [cpuPercent = "-", memoryUsage = "-", memoryPercent = "-"] = stats ? stats.split("|") : [];
+  // Only published bindings (which carry a host port) are surfaced; internal-only ports are dropped.
+  const published = [...new Set((ports.match(/\d+\/(?:tcp|udp)=[^\s]*/g) || []).filter((entry) => /:\d{2,5}/.test(entry)).map((entry) => entry.replace(/,(:::[\d.,]+)/, "").replace(/,$/, "")))].join(", ") || "-";
+  return { state, running: running === "true", health: health || "none", restartCount: Number.parseInt(restartCount, 10) || 0, startedAt, image, restartPolicy, ports: published, cpuPercent, memoryUsage, memoryPercent };
+}
+
 export type ContainerDiagnostics = { state: string; logs: string };
 export async function containerDiagnostics(containerId: string): Promise<ContainerDiagnostics> {
   const state = await docker(["inspect", "--format", "{{.State.Status}} exit={{.State.ExitCode}} running={{.State.Running}}{{if .State.Error}} error={{.State.Error}}{{end}}", containerId], 64 * 1024).then((result) => result.stdout.trim()).catch(() => "");
