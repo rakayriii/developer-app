@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
+import { clampIndex, filterCommands, initialPaletteState, paletteAction, paletteQueryChanged, reducePalette, type PaletteState, type PaletteCommandLike } from "@/lib/command-palette";
 
 export type ShellNavId = "overview" | "projects" | "terminal" | "git" | "deployments" | "tasks" | "notes" | "github" | "repositories" | "pull-requests" | "issues" | "docker" | "servers" | "system" | "settings";
 
@@ -10,6 +11,69 @@ export const navGroups = [
   { label: "Development", items: [["GitHub", "github"], ["Repositories", "repositories"], ["Pull Requests", "pull-requests"], ["Issues", "issues"]] },
   { label: "Infrastructure", items: [["Deployments", "deployments"], ["Docker", "docker"], ["Servers", "servers"], ["System", "system"]] },
 ] as const;
+
+// The routed section a nav id resolves to. The sidebar link and a palette command must land in exactly
+// the same place, so both read this one table instead of each deciding for itself.
+const routeSections: { prefix: string; page: ShellNavId; title: string }[] = [
+  { prefix: "/deployments", page: "deployments", title: "Deployments" },
+  { prefix: "/servers", page: "servers", title: "Servers" },
+  { prefix: "/projects", page: "projects", title: "Projects" },
+  { prefix: "/github", page: "github", title: "GitHub" },
+  { prefix: "/git", page: "git", title: "Git" },
+  { prefix: "/terminal", page: "terminal", title: "Terminal" },
+  { prefix: "/system", page: "system", title: "System" },
+];
+
+function sectionFor(pathname: string) {
+  return routeSections.find((section) => pathname === section.prefix || pathname.startsWith(`${section.prefix}/`));
+}
+
+/**
+ * Resolves a workspace id to the href the matching sidebar link would use.
+ *
+ * On the hash workspace every id is a fragment. On a routed section its own id is a real path and every
+ * other id leaves the section for `/#id`, because changing only the fragment of the current route would
+ * open nothing. Reading `window` here is safe: this is called when a command executes, never while
+ * rendering.
+ */
+export function commandTargetHref(id: string, pathname = typeof window === "undefined" ? "/" : window.location.pathname) {
+  const section = sectionFor(pathname);
+  if (section && id !== section.page) return `/#${id}`;
+  if (section) return section.prefix;
+  return `#${id}`;
+}
+
+/** Navigates using the same target resolution as the sidebar, so routing is never duplicated here. */
+export function navigateToWorkspace(id: string) {
+  window.location.assign(commandTargetHref(id));
+}
+
+export type PaletteCommand = PaletteCommandLike & { group: string; run: () => void };
+
+/**
+ * The palette's command registry.
+ *
+ * Navigation entries are derived from `navGroups`, the sidebar's own registry, so a palette command can
+ * never fall out of step with the navigation beside it. The commands the palette already offered are
+ * preserved as explicit entries.
+ */
+export function buildPaletteCommands(toggleTheme: () => void): PaletteCommand[] {
+  const navigation: PaletteCommand[] = navGroups.flatMap((group) => group.items.map(([label, id]) => ({
+    id: `nav:${id}`,
+    label: id === "overview" ? `Go to ${label}` : `Open ${label}`,
+    group: "Navigate",
+    keywords: id,
+    run: () => navigateToWorkspace(id),
+  })));
+
+  navigation.push({ id: "search:projects", label: "Search projects", group: "Navigate", keywords: "projects search", run: () => navigateToWorkspace("projects") });
+
+  return [
+    ...navigation,
+    { id: "action:theme", label: "Toggle theme", group: "Actions", keywords: "theme dark light appearance", run: toggleTheme },
+    { id: "nav:settings", label: "Open Settings", group: "Actions", keywords: "settings preferences", run: () => navigateToWorkspace("settings") },
+  ];
+}
 
 const iconFor = (id: string) => (id === "overview" ? "grid" : id === "projects" ? "folder" : id === "tasks" ? "check" : id === "notes" ? "note" : id === "github" ? "github" : id === "docker" ? "box" : id === "system" || id === "servers" ? "server" : "grid");
 
@@ -34,23 +98,6 @@ const clientTrue = () => true;
 const serverFalse = () => false;
 
 export const themeToggleEvent = "developer-os-toggle-theme";
-export const commandPaletteEvent = "developer-os-open-command-palette";
-
-// Which routed section a pathname belongs to. The shell lives in the root layout, so every route
-// inherits it and no section needs its own layout file that could drift from the others.
-const routeSections: { prefix: string; page: ShellNavId; title: string }[] = [
-  { prefix: "/deployments", page: "deployments", title: "Deployments" },
-  { prefix: "/servers", page: "servers", title: "Servers" },
-  { prefix: "/projects", page: "projects", title: "Projects" },
-  { prefix: "/github", page: "github", title: "GitHub" },
-  { prefix: "/git", page: "git", title: "Git" },
-  { prefix: "/terminal", page: "terminal", title: "Terminal" },
-  { prefix: "/system", page: "system", title: "System" },
-];
-
-function sectionFor(pathname: string) {
-  return routeSections.find((section) => pathname === section.prefix || pathname.startsWith(`${section.prefix}/`));
-}
 
 type AppShellProps = {
   /**
@@ -61,17 +108,122 @@ type AppShellProps = {
   /** Label shown in the topbar crumb after "Workspace /". Derived from the pathname when omitted. */
   title?: string;
   children: React.ReactNode;
-  onNavigate?: () => void;
 };
 
+/**
+ * Guards against running the same command twice.
+ *
+ * This lives outside the component on purpose. The guard needs a value that flips synchronously, so it
+ * cannot be state: two Enter presses in one tick would both read the same stale value. Declaring it here
+ * as a plain closure keeps it out of the component's render scope, and its stable identity comes from a
+ * lazy state initializer rather than a ref.
+ */
+function createExecutionGuard() {
+  let inFlight = false;
+  return {
+    run(command: PaletteCommand, close: () => void) {
+      if (inFlight) return;
+      inFlight = true;
+      try { command.run(); }
+      catch (error) { console.error("Command palette command failed:", error); }
+      finally { inFlight = false; close(); }
+    },
+  };
+}
+
+/**
+ * The command palette. A single implementation, rendered by the shell on every route so Ctrl/Cmd + K and
+ * the topbar trigger behave identically wherever the user is.
+ */
+function CommandPalette({ close, commands }: { close: () => void; commands: PaletteCommand[] }) {
+  const [state, setState] = useState(initialPaletteState);
+  const [guard] = useState(createExecutionGuard);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const results = useMemo(() => filterCommands(commands, state.query), [commands, state.query]);
+  // The visible result count is part of the state the key handlers reason about, so a keystroke always
+  // clamps against the list the user can actually see rather than the one they saw a moment ago.
+  const view: PaletteState = { ...state, resultsLength: results.length };
+  const activeIndex = clampIndex(state.selectedIndex, results.length);
+  const activeCommand = activeIndex >= 0 ? results[activeIndex] : undefined;
+
+  function execute(command: PaletteCommand | undefined) {
+    // A disabled command, or an empty result list, is a no-op: nothing to run, nothing to close over.
+    if (!command || command.disabled) return;
+    guard.run(command, close);
+  }
+
+  // Keep the highlighted row visible when the list is longer than the viewport.
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, state.query]);
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const action = paletteAction(view, event.key);
+    // An unrecognised key is left entirely alone, so ordinary typing is never interrupted.
+    if (!action) return;
+    // Only the four keys the palette owns reach here, and all four must not act on the browser default:
+    // the arrows would move the text caret, Enter would submit nothing useful.
+    event.preventDefault();
+    if (action.type === "close") { close(); return; }
+    if (action.type === "move") { setState(reducePalette(view, action)); return; }
+    if (action.index >= 0) execute(results[action.index]);
+  };
+
+  // Group headings are decoration only; the listbox below is what assistive technology reads.
+  const groups: string[] = [...new Set(results.map((command) => command.group))];
+
+  return <div className="palette-backdrop" role="presentation" onMouseDown={close}><section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}>
+    <div className="palette-input">
+      <span aria-hidden="true">⌕</span>
+      <input
+        autoFocus
+        value={state.query}
+        onChange={(event) => setState(paletteQueryChanged(view, event.target.value))}
+        onKeyDown={onKeyDown}
+        placeholder="Type a command..."
+        aria-label="Search commands"
+        role="combobox"
+        aria-expanded="true"
+        aria-controls="command-palette-list"
+        aria-autocomplete="list"
+        aria-activedescendant={activeCommand ? `command-palette-option-${activeCommand.id}` : undefined}
+      />
+    </div>
+    <div className="command-list" id="command-palette-list" role="listbox" aria-label="Commands" ref={listRef}>
+      {results.length === 0 ? <div className="command-empty">No matching commands.</div> : groups.map((group) => <div key={group}>
+        <div className="command-group-label" aria-hidden="true">{group}</div>
+        {results.map((command, index) => (
+          <button
+            className="command-item"
+            type="button"
+            role="option"
+            id={`command-palette-option-${command.id}`}
+            key={command.id}
+            aria-selected={index === activeIndex}
+            disabled={command.disabled}
+            onMouseMove={() => setState((current) => ({ ...current, selectedIndex: index }))}
+            onClick={() => execute(command)}
+          >
+            <span>{command.label}</span>
+            <kbd aria-hidden="true">↵</kbd>
+          </button>
+        ))}
+      </div>)}
+    </div>
+    <div className="palette-footer"><span>Esc to close</span><span>↑↓ to navigate</span><span>↵ to run</span></div>
+  </section></div>;
+}
+
 // The single Developer OS shell. The hash workspace and every routed section render through this
-// component, so the sidebar, topbar, content area, and theme can never drift apart between them.
+// component, so the sidebar, topbar, content area, theme, and command palette can never drift apart.
 export function AppShell({ page, title, children }: AppShellProps) {
   const pathname = usePathname();
   const section = sectionFor(pathname);
   // "/" is the hash workspace, so its active nav item lives in the URL fragment; every other route
   // derives both its active item and its crumb from the pathname.
-  const [hashPage, setHashPage] = useState(() => "");
+  const [hashPage, setHashPage] = useState("");
   useEffect(() => {
     if (pathname !== "/") return;
     const sync = () => setHashPage(window.location.hash.slice(1) || "overview");
@@ -83,8 +235,9 @@ export function AppShell({ page, title, children }: AppShellProps) {
   const crumb = title ?? section?.title ?? activePage.replace(/-/g, " ").replace(/^./, (letter) => letter.toUpperCase());
   // On a routed section every other nav item must leave the section, or "#id" would only change the
   // fragment of the current route and the workspace tab would never open.
-  const navHref = (id: string) => (section && id !== section.page ? `/#${id}` : section ? section.prefix : `#${id}`);
+  const navHref = (id: string) => commandTargetHref(id, pathname);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState("");
   // Read during the initial render instead of in an effect: no mount setState, and the stored theme
   // survives navigating between the shell's routes.
@@ -94,12 +247,6 @@ export function AppShell({ page, title, children }: AppShellProps) {
   });
   // SSR-safe client flag, so the toast never renders during hydration.
   const mounted = useSyncExternalStore(emptySubscribe, clientTrue, serverFalse);
-
-  useEffect(() => {
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
 
   const closeMenu = () => setMenuOpen(false);
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(""), 2600); };
@@ -111,12 +258,18 @@ export function AppShell({ page, title, children }: AppShellProps) {
     });
   }, []);
 
-  // The command palette lives outside the shell, so it requests a theme change through this event.
+  const commands = useMemo(() => buildPaletteCommands(toggleTheme), [toggleTheme]);
+
+  // Ctrl/Cmd + K opens the palette, Escape closes it. Registered on the shell so it works on every
+  // route rather than only on the hash workspace.
   useEffect(() => {
-    const listener = () => toggleTheme();
-    window.addEventListener(themeToggleEvent, listener);
-    return () => window.removeEventListener(themeToggleEvent, listener);
-  }, [toggleTheme]);
+    const key = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPaletteOpen(true); }
+      if (event.key === "Escape") { setPaletteOpen(false); setMenuOpen(false); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
 
   return <div className={dark ? "app-shell dark" : "app-shell"}>
     <a className="skip-link" href="#main-content">Skip to content</a>
@@ -132,7 +285,7 @@ export function AppShell({ page, title, children }: AppShellProps) {
       <header className="topbar">
         <div className="crumb"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(!menuOpen)}>☰</button><span>Workspace</span><span className="crumb-separator">/</span><strong>{crumb}</strong></div>
         <div className="top-actions">
-          <button className="command-trigger" onClick={() => window.dispatchEvent(new CustomEvent(commandPaletteEvent))}><span>Search commands</span><kbd>⌘ K</kbd></button>
+          <button className="command-trigger" onClick={() => setPaletteOpen(true)}><span>Search commands</span><kbd>⌘ K</kbd></button>
           <button className="icon-button" aria-label="View notifications" onClick={() => notify("No new notifications.")}>◌</button>
           <button className="icon-button" aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={toggleTheme}>{dark ? "☼" : "☾"}</button>
           <button className="top-avatar" aria-label="Open profile" onClick={() => notify("Profile controls are not connected yet.")}>SK</button>
@@ -140,6 +293,7 @@ export function AppShell({ page, title, children }: AppShellProps) {
       </header>
       <main id="main-content" className="main-content">{children}</main>
     </div>
+    {paletteOpen && <CommandPalette close={() => setPaletteOpen(false)} commands={commands} />}
     {mounted && notice && <div className="toast" role="status">{notice}</div>}
   </div>;
 }

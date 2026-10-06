@@ -8,7 +8,7 @@ import TerminalWorkspace from "@/components/terminal-workspace";
 import SystemWorkspace from "@/components/system-workspace";
 import GitWorkspace from "@/components/git-workspace";
 import DeploymentWorkspace from "@/components/deployment-workspace";
-import { Icon, commandPaletteEvent, themeToggleEvent } from "@/components/app-shell";
+import { Icon, navigateToWorkspace } from "@/components/app-shell";
 import { readApiJson } from "@/lib/api/client";
 import { projects, systemMetrics } from "@/data/mock-data";
 
@@ -22,25 +22,18 @@ function Status({ tone, children }: { tone: string; children: React.ReactNode })
 
 export default function DeveloperOS() {
   const [page, setPage] = useState<Page>("overview");
-  const [paletteOpen, setPaletteOpen] = useState(false);
   const [githubTab, setGithubTab] = useState("Repositories");
   useEffect(() => {
     const sync = () => setPage((window.location.hash.slice(1) || "overview") as Page);
     sync();
     window.addEventListener("hashchange", sync);
-    const key = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPaletteOpen(true); } if (event.key === "Escape") setPaletteOpen(false); };
-    window.addEventListener("keydown", key);
-    const openPalette = () => setPaletteOpen(true);
-    window.addEventListener(commandPaletteEvent, openPalette);
-    return () => { window.removeEventListener("hashchange", sync); window.removeEventListener("keydown", key); window.removeEventListener(commandPaletteEvent, openPalette); };
+    return () => window.removeEventListener("hashchange", sync);
   }, []);
-  const go = (destination: string) => { window.location.hash = destination; };
+  // The same resolver the sidebar and the palette use, so a quick link lands where its nav item would.
+  const go = (destination: string) => navigateToWorkspace(destination);
   const pageTitle = page === "pull-requests" ? "Pull Requests" : page.replace("-", " ");
   const content = page === "overview" ? <Overview go={go} /> : page === "projects" ? <ProjectWorkspaceList /> : page === "git" ? <GitWorkspace /> : page === "deployments" ? <DeploymentWorkspace /> : page === "github" || page === "repositories" || page === "pull-requests" || page === "issues" ? <GithubPhase2 page={page} tab={githubTab} setTab={setGithubTab} /> : page === "docker" ? <Docker /> : page === "system" || page === "servers" ? <System page={page} /> : <Placeholder page={pageTitle} />;
-  return <>
-    {content}
-    {paletteOpen && <CommandPalette close={() => setPaletteOpen(false)} go={go} toggleTheme={() => window.dispatchEvent(new CustomEvent(themeToggleEvent))} />}
-  </>;
+  return <>{content}</>;
 }
 
 function PageHeader({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><h1>{title}</h1><p>{description}</p></div>{action && <div className="header-action">{action}</div>}</div>; }
@@ -59,4 +52,3 @@ function Overview({ go }: { go: (page: string) => void }) {
 function Docker() { return <DockerPhase3 />; }
 function System({ page }: { page: Page }) { return page === "system" ? <SystemWorkspace /> : <><PageHeader title="Servers" description="Local and connected server environments." /><section className="panel state-block"><strong>No connected servers</strong><span>Server details will appear here when an environment is configured.</span></section></>; }
 function Placeholder({ page }: { page: string }) { return page === "terminal" ? <TerminalWorkspace /> : <><PageHeader title={page.charAt(0).toUpperCase() + page.slice(1)} description={`A focused space for ${page.toLowerCase()} in your workspace.`} /><section className="panel state-block"><strong>This view is ready for your data.</strong><span>Backend connections are intentionally out of scope for this frontend pass.</span></section></>; }
-function CommandPalette({ close, go, toggleTheme }: { close: () => void; go: (page: string) => void; toggleTheme: () => void }) { const commands = [["Go to Overview", "overview"], ["Open Projects", "projects"], ["Open GitHub", "github"], ["Open Docker", "docker"], ["Open System", "system"], ["Search projects", "projects"]]; return <div className="palette-backdrop" role="presentation" onMouseDown={close}><section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}><div className="palette-input"><span>⌕</span><input autoFocus placeholder="Type a command..." aria-label="Search commands" /></div><div className="command-list"><div className="command-group-label">Navigate</div>{commands.map(([label, destination], index) => <button className="command-item" key={`${destination}-${index}`} onClick={() => { go(destination); close(); }}><span>{label}</span><kbd>↵</kbd></button>)}<div className="command-group-label">Actions</div><button className="command-item" onClick={() => { toggleTheme(); close(); }}><span>Toggle theme</span><kbd>↵</kbd></button><button className="command-item" onClick={() => { go("settings"); close(); }}><span>Open Settings</span><kbd>↵</kbd></button></div><div className="palette-footer"><span>Esc to close</span><span>↑↓ to navigate</span></div></section></div>; }
