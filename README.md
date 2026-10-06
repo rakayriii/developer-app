@@ -74,6 +74,86 @@ Deployment APIs are available under `/api/deployments` and `/api/projects/[id]/e
 npm run db:migrate
 ```
 
+## API error contract
+
+Every API failure returns `application/json` with `{ code, message }` and an optional `details`
+object. Responses never contain stack traces, GitHub or SSH tokens, `DATABASE_URL`, private key
+material, filesystem internals, or raw Docker inspect payloads; diagnostic detail belongs in the
+server log.
+
+An API route that does not resolve, or a proxy that answers with HTML, must never reach the browser
+as a parse error. `readApiJson` in `src/lib/api/client.ts` reads any response without throwing and
+normalizes a non-JSON body, a malformed body, an empty body, or an error body that is not shaped like
+a contract into the same `{ code, message }` form the UI already renders. The server-side mapper in
+`src/lib/api/errors.ts` and the pure contract in `src/lib/api/contract.ts` are the single place that
+assigns codes to thrown values, so the same failure cannot be described differently by two routes.
+
+Representative codes: `not_authenticated`, `auth_expired`, `forbidden`, `not_found`,
+`validation_error`, `invalid_response`, `rate_limited`, `github_upstream_error`, `database_unavailable`,
+`docker_unavailable`, `deployment_in_progress`, `invalid_deployment_transition`, `health_check_failed`,
+`ssh_connection_failed`, `host_key_untrusted`, `host_key_mismatch`.
+
+## App shell and routing
+
+`src/components/app-shell.tsx` is the only shell. `src/app/layout.tsx` renders it once, so every
+App Router route inherits the same sidebar, topbar, `<main id="main-content">`, theme handling,
+mobile navigation, and active-nav state. Sections must not add their own sidebar, topbar, or
+`<main>` element, and must not re-declare content width or padding — the shell owns that geometry.
+
+The shell derives its active nav item and breadcrumb from `usePathname()`, so a routed section does
+not need its own layout file. `/` is the hash workspace and derives the same state from the URL
+fragment instead.
+
+| Route | Nav section | Notes |
+| --- | --- |
+| `/` | hash workspace | `#overview`, `#projects`, `#docker`, `#github`, … |
+| `/deployments`, `/deployments/[id]` | Deployments | real routes |
+| `/servers`, `/servers/[id]` | Servers | real routes |
+| `/projects/[id]` | Projects | the project list remains a hash tab |
+| `/github/repositories/[owner]/[repo]` | GitHub | repository detail |
+| `/git`, `/terminal`, `/system` | Git, Terminal, System | real routes |
+
+On a routed section every other nav item points back at `/#id`, so leaving a section cannot leave the
+user stranded on an inert fragment.
+
+## Database availability
+
+Developer OS uses PostgreSQL, reached through `DATABASE_URL`. Apply migrations before first use:
+
+```bash
+npm run db:migrate
+npx prisma migrate status   # "Database schema is up to date!" is the expected result
+```
+
+The container the development environment depends on must use a restart policy, because the
+application has no fallback database:
+
+```bash
+docker update --restart unless-stopped developer-os-postgres
+```
+
+This is an environment-level requirement rather than a repository setting, so it is not applied
+automatically.
+
+A database outage is reported as `503 database_unavailable`, never as an empty list and never as an
+opaque `500`. Prisma signals an unreachable server either with `P1001`, `P2021`, or `P1003`, or —
+while the client is initialising — with a message and no code at all, so both shapes are recognised.
+
+## Development cache recovery
+
+If `npm run dev` fails while reading a Turbopack cache entry under `.next/dev/cache/`, a previous
+process was most likely killed mid-write. Stop every `node server.mjs` process, then remove only the
+development cache:
+
+```bash
+rm -f .next/dev/lock
+rm -rf .next/dev/cache
+npm run dev
+```
+
+This discards a regenerable cache. Do not remove `.next` as a first response to a genuine compile
+error, because that hides the real message.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
@@ -83,14 +163,8 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Hosting
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-
-# Git Phase 7 test
-
-# Git Phase 7 test
-
-# Git Phase 7 test
+This application uses a custom Node server (`server.mjs`) for terminal WebSocket upgrades, drives a
+local Docker daemon, reads local Git repositories, and opens outbound SSH connections. It is
+self-hosted and is not deployable to a serverless platform.

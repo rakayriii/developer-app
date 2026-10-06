@@ -1,4 +1,6 @@
 "use client";
+
+import { readApiJson } from "@/lib/api/client";
 /* eslint-disable @next/next/no-html-link-for-pages */
 /* The main repository shell is a client-rendered view; its root back link remains a real app destination. */
 
@@ -31,10 +33,14 @@ export default function GithubRepositoryDetail({ owner, repo }: { owner: string;
   useEffect(() => {
     let cancelled = false;
     Promise.all([fetch(repoPath(owner, repo), { cache: "no-store" }), fetch(`${repoPath(owner, repo)}/branches?per_page=10`, { cache: "no-store" })]).then(async ([detailResponse, branchesResponse]) => {
-      const detailBody = await detailResponse.json();
-      const branchBody = await branchesResponse.json();
-      if (!detailResponse.ok) throw detailBody;
-      if (!branchesResponse.ok) throw branchBody;
+      const [detailResult, branchResult] = await Promise.all([
+        readApiJson<{ repository: Detail; languages: Language[] }>(detailResponse),
+        readApiJson<{ items?: Branch[] }>(branchesResponse),
+      ]);
+      if (!detailResult.ok) throw Object.assign(new Error(detailResult.error.message), detailResult.error);
+      if (!branchResult.ok) throw Object.assign(new Error(branchResult.error.message), branchResult.error);
+      const detailBody = detailResult.data;
+      const branchBody = branchResult.data;
       if (!cancelled) { setDetail(detailBody.repository); setLanguages(detailBody.languages || []); setBranches(branchBody.items || []); setLoading(false); }
     }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setLoading(false); } });
     return () => { cancelled = true; };
@@ -44,15 +50,15 @@ export default function GithubRepositoryDetail({ owner, repo }: { owner: string;
     if (!detail || tab === "Overview") return;
     const endpoint = tab === "Commits" ? "commits" : tab === "Pull Requests" ? "pull-requests" : tab.toLowerCase();
     let cancelled = false;
-    fetch(`${repoPath(owner, repo)}/${endpoint}?per_page=10`, { cache: "no-store" }).then(async (response) => { const body = await response.json(); if (!response.ok) throw body; return body; }).then((body) => { if (cancelled) return; if (tab === "Commits") setCommits(body.items || []); if (tab === "Pull Requests") setPullRequests(body.items || []); if (tab === "Issues") setIssues(body.items || []); setTabLoading(false); }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setTabLoading(false); } });
+    fetch(`${repoPath(owner, repo)}/${endpoint}?per_page=10`, { cache: "no-store" }).then(async (response) => { const result = await readApiJson<{ items?: Commit[] | PullRequest[] | Issue[] }>(response); if (!result.ok) throw Object.assign(new Error(result.error.message), result.error); return result.data; }).then((body) => { if (cancelled) return; if (tab === "Commits") setCommits(body.items as Commit[]); if (tab === "Pull Requests") setPullRequests(body.items as PullRequest[]); if (tab === "Issues") setIssues(body.items as Issue[]); setTabLoading(false); }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setTabLoading(false); } });
     return () => { cancelled = true; };
   }, [detail, owner, repo, tab]);
 
-  if (loading) return <main className="repository-detail"><Link className="back-link" href="/">← Back to Developer OS</Link><div className="panel state-block" role="status"><strong>Loading repository</strong><span>Fetching repository details securely.</span></div></main>;
-  if (error || !detail) return <main className="repository-detail"><Link className="back-link" href="/">← Back to Developer OS</Link><div className="github-state github-error" role="alert"><strong>{error?.code === "not_authenticated" ? "Connect GitHub to view this repository" : "Repository unavailable"}</strong><span>{error?.message || "GitHub did not return this repository."}</span>{error?.code === "not_authenticated" && <a className="primary-button" href="/api/auth/github">Connect GitHub</a>}</div></main>;
+  if (loading) return <div className="repository-detail"><Link className="back-link" href="/">← Back to Developer OS</Link><div className="panel state-block" role="status"><strong>Loading repository</strong><span>Fetching repository details securely.</span></div></div>;
+  if (error || !detail) return <div className="repository-detail"><Link className="back-link" href="/">← Back to Developer OS</Link><div className="github-state github-error" role="alert"><strong>{error?.code === "not_authenticated" ? "Connect GitHub to view this repository" : "Repository unavailable"}</strong><span>{error?.message || "GitHub did not return this repository."}</span>{error?.code === "not_authenticated" && <a className="primary-button" href="/api/auth/github">Connect GitHub</a>}</div></div>;
 
   const tabs = ["Overview", "Commits", "Pull Requests", "Issues", "Branches"];
-  return <main className="repository-detail"><a className="back-link" href="/">← Back to Developer OS</a><header className="repository-header"><div><div className="repository-kicker">{detail.owner} / {detail.visibility}</div><h1>{detail.name}</h1><p>{detail.description || "No description provided."}</p></div><a className="secondary-button external-button" href={detail.url} target="_blank" rel="noreferrer">Open on GitHub</a></header><div className="repository-meta"><span>{detail.owner}</span><span>{detail.defaultBranch}</span><span>{detail.language || "Language not specified"}</span>{detail.license && <span>{detail.license}</span>}</div><section className="overview-grid repository-stats"><Stat label="Stars" value={detail.stars} /><Stat label="Forks" value={detail.forks} /><Stat label="Open issues" value={detail.openIssues} /><Stat label="Watchers" value={detail.watchers} /></section><div className="tabs" role="tablist">{tabs.map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "tab active" : "tab"} onClick={() => setTab(item)} key={item}>{item}</button>)}</div>{tabLoading && <div className="panel state-block" role="status"><strong>Loading {tab.toLowerCase()}</strong><span>Fetching the latest repository data.</span></div>}{!tabLoading && tab === "Overview" && <OverviewPanel detail={detail} languages={languages} branches={branches} />}{!tabLoading && tab === "Commits" && <CommitPanel items={commits} />}{!tabLoading && tab === "Pull Requests" && <PullRequestPanel items={pullRequests} />}{!tabLoading && tab === "Issues" && <IssuePanel items={issues} />}{!tabLoading && tab === "Branches" && <BranchPanel items={branches} />}</main>;
+  return <div className="repository-detail"><a className="back-link" href="/">← Back to Developer OS</a><header className="repository-header"><div><div className="repository-kicker">{detail.owner} / {detail.visibility}</div><h1>{detail.name}</h1><p>{detail.description || "No description provided."}</p></div><a className="secondary-button external-button" href={detail.url} target="_blank" rel="noreferrer">Open on GitHub</a></header><div className="repository-meta"><span>{detail.owner}</span><span>{detail.defaultBranch}</span><span>{detail.language || "Language not specified"}</span>{detail.license && <span>{detail.license}</span>}</div><section className="overview-grid repository-stats"><Stat label="Stars" value={detail.stars} /><Stat label="Forks" value={detail.forks} /><Stat label="Open issues" value={detail.openIssues} /><Stat label="Watchers" value={detail.watchers} /></section><div className="tabs" role="tablist">{tabs.map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "tab active" : "tab"} onClick={() => setTab(item)} key={item}>{item}</button>)}</div>{tabLoading && <div className="panel state-block" role="status"><strong>Loading {tab.toLowerCase()}</strong><span>Fetching the latest repository data.</span></div>}{!tabLoading && tab === "Overview" && <OverviewPanel detail={detail} languages={languages} branches={branches} />}{!tabLoading && tab === "Commits" && <CommitPanel items={commits} />}{!tabLoading && tab === "Pull Requests" && <PullRequestPanel items={pullRequests} />}{!tabLoading && tab === "Issues" && <IssuePanel items={issues} />}{!tabLoading && tab === "Branches" && <BranchPanel items={branches} />}</div>;
 }
 
 function Stat({ label, value }: { label: string; value: number }) { return <div className="summary"><div className="summary-top"><span>{label}</span></div><div className="summary-value">{value}</div></div>; }

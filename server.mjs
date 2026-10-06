@@ -47,4 +47,14 @@ server.on("upgrade", async (request, socket, head) => {
 });
 const shutdown = () => { shutdownTerminals(); server.close(() => process.exit(0)); setTimeout(() => process.exit(1), 5000).unref(); };
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
+server.on("error", (error) => {
+  // Without a listener Node turns a bind failure into an unhandled 'error' event, so the operator
+  // only sees a raw stack trace instead of which port is taken and by what.
+  if (error.code === "EADDRINUSE") {
+    console.error(JSON.stringify({ service: "server", event: "port_in_use", port, hint: `Another process is already listening on port ${port}. Stop it, or start this server with a different PORT.` }));
+  } else {
+    console.error(JSON.stringify({ service: "server", event: "startup_failed", message: error.message }));
+  }
+  shutdown();
+});
 server.listen(port, () => console.info(JSON.stringify({ service: "server", event: "listening", port })));
