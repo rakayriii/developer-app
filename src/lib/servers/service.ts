@@ -2,11 +2,10 @@ import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/deployments/crypto";
 import { probeNames, SshError, scanHostKey, scanHostKeyWithCredential, connect, fingerprintOfLine, safeDiagnostic, type ProbeName, type SshSession } from "./ssh";
 import { assembleProbeResult } from "./probe";
-import { credentialFingerprint, validateServerInput, ServerConflictError, ServerNotFoundError, ServerValidationError } from "./validation";
+import { credentialFingerprint, validateServerInput, ServerConflictError, ServerInUseError, ServerNotFoundError, ServerValidationError } from "./validation";
 import { toPublicServer as publicServer, type ServerRecord, type PublicServer } from "./serialize";
 import { isPrismaUnavailable } from "@/lib/api/contract";
 
-type ServerRow = ServerRecord;
 
 export async function listServers(userId: string) {
   const rows = await prisma.server.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }) as ServerRecord[];
@@ -63,6 +62,18 @@ export async function updateServer(userId: string, id: string, body: Record<stri
 // Removes the server record and its encrypted credential. Nothing remote is touched.
 export async function deleteServer(userId: string, id: string) {
   await requireOwnedServer(userId, id);
+  // A server that still hosts an environment or a deployment cannot be removed. That is deliberate: the
+  // foreign keys are RESTRICT so a running remote deployment can never lose the record of where its
+  // container lives. Say so plainly instead of surfacing a foreign-key constraint failure.
+  const [environments, deployments] = await Promise.all([
+    prisma.deploymentEnvironment.count({ where: { serverId: id } }),
+    prisma.deployment.count({ where: { serverId: id } }),
+  ]);
+  if (environments || deployments) {
+    throw new ServerInUseError(
+      `This server is still referenced by ${environments} environment(s) and ${deployments} deployment(s). Repoint or delete them before removing the server.`,
+    );
+  }
   await prisma.server.delete({ where: { id } });
   return { ok: true };
 }
@@ -77,7 +88,10 @@ async function runProbes(session: SshSession) {
   return assembleProbeResult(values as { os: string; arch: string; kernel: string; cpu: string; memory: string; disk: string; docker: string });
 }
 
-function resolvePrivateKey(server: ServerRow) {
+// Decrypts a stored credential. Exported so a remote deployment reuses the same helper instead of
+// re-implementing decryption; the plaintext is only ever passed straight into the SSH transport,
+// which writes it to a 0600 file that is removed when the session ends.
+export function resolvePrivateKey(server: { encryptedCredential: string | null }) {
   if (!server.encryptedCredential) throw new SshError("authentication_failed", "No SSH credential is configured for this server.", 409);
   const key = decryptSecret(server.encryptedCredential);
   if (!key) throw new SshError("authentication_failed", "The stored SSH credential could not be decrypted.", 409);
@@ -143,7 +157,7 @@ export async function recentChecks(userId: string, id: string, take = 20) {
   return rows.map((row) => ({ id: row.id, status: row.status, code: row.code, message: row.message, hostKeyFingerprint: row.hostKeyFingerprint, hostKeyTrusted: row.hostKeyTrusted, durationMs: row.durationMs, createdAt: row.createdAt }));
 }
 
-const structuredErrors = [SshError, ServerValidationError, ServerNotFoundError, ServerConflictError];
+const structuredErrors = [SshError, ServerValidationError, ServerNotFoundError, ServerConflictError, ServerInUseError];
 
 export function serverError(error: unknown) {
   for (const kind of structuredErrors) if (error instanceof kind) return { code: (error as { code: string }).code, message: (error as Error).message, status: (error as { status: number }).status };

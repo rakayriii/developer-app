@@ -4,7 +4,7 @@ import { deploymentAppUrl } from "@/lib/deployments/operations";
 import { deploymentError, deploymentIdentity, forbidden, notAuthenticated } from "@/lib/deployments/api";
 export const runtime = "nodejs"; export const dynamic = "force-dynamic";
 
-async function owned(id: string) { const identity = await deploymentIdentity(); if (!identity) return { response: notAuthenticated() }; const deployment = await prisma.deployment.findFirst({ where: { id, project: { userId: identity.userId } }, include: { project: { select: { id: true, name: true, slug: true, localRepositoryPath: true } }, environment: true } }); if (!deployment) return { response: forbidden() }; return { deployment }; }
+async function owned(id: string) { const identity = await deploymentIdentity(); if (!identity) return { response: notAuthenticated() }; const deployment = await prisma.deployment.findFirst({ where: { id, project: { userId: identity.userId } }, include: { project: { select: { id: true, name: true, slug: true, localRepositoryPath: true } }, environment: true, server: { select: { id: true, name: true, status: true, dockerAvailable: true, dockerVersion: true, architecture: true, hostKeyTrustedAt: true } } } }); if (!deployment) return { response: forbidden() }; return { deployment }; }
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -24,6 +24,15 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       branch: deployment.branch,
       imageTag: deployment.imageTag,
       dockerfile: deployment.dockerfile,
+      // Where it runs. Only safe, already-public server facts are exposed: no hostname credential,
+      // and nothing that could identify a private key.
+      target: deployment.target,
+      serverId: deployment.serverId,
+      server: deployment.server ? { id: deployment.server.id, name: deployment.server.name, status: deployment.server.status, dockerAvailable: deployment.server.dockerAvailable, dockerVersion: deployment.server.dockerVersion, architecture: deployment.server.architecture, hostKeyTrusted: deployment.server.hostKeyTrustedAt !== null } : null,
+      remoteImageTag: deployment.remoteImageTag,
+      transferBytes: deployment.transferBytes ? Number(deployment.transferBytes) : null,
+      transferStartedAt: deployment.transferStartedAt,
+      transferCompletedAt: deployment.transferCompletedAt,
       containerId: deployment.containerId,
       containerName: deployment.containerName,
       rollbackOfId: deployment.rollbackOfId,
@@ -36,6 +45,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       project: deployment.project,
       environment: deployment.environment,
       healthUrl: `http://127.0.0.1:${deployment.environment.hostPort}${deployment.environment.healthPath}`,
+      healthVerifiedRemotely: deployment.target === "remote",
       appUrl: deploymentAppUrl(deployment),
       history: siblings,
     });

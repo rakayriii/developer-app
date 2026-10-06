@@ -1,7 +1,8 @@
-export const knownLogStages = ["validation", "build", "container", "system", "release", "health", "runtime", "stop", "restart", "rollback", "diagnostics", "error"] as const;
+export const knownLogStages = ["validation", "build", "transfer", "remote_image", "container", "system", "release", "health", "runtime", "stop", "restart", "rollback", "diagnostics", "error"] as const;
 // Lifecycle display order. These are the stage names actually persisted in DeploymentLog.stream
-// (see stageStream in service.ts), not the internal Stage enum members.
-export const stageOrder = ["validation", "build", "port", "container", "release", "health", "runtime", "stop", "restart", "rollback"] as const;
+// (see stageStream in stages.ts), not the internal Stage enum members. "transfer" and "remote_image"
+// only ever appear for a remote deployment, and stay empty for a local one.
+export const stageOrder = ["validation", "build", "transfer", "remote_image", "port", "container", "release", "health", "runtime", "stop", "restart", "rollback"] as const;
 
 const knownStageSet = new Set<string>(knownLogStages);
 

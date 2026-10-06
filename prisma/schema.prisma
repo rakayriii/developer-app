@@ -42,6 +42,13 @@ enum ServerStatus {
   error
 }
 
+// Where a deployment actually runs. "local" is the original Phase 8 behaviour and remains the
+// default, so every existing environment keeps deploying to the local Docker daemon.
+enum DeploymentTarget {
+  local
+  remote
+}
+
 model User {
   id          String    @id @default(cuid())
   githubLogin String    @unique
@@ -85,6 +92,8 @@ model Server {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
   checks                ServerCheck[]
+  environments          DeploymentEnvironment[]
+  deployments           Deployment[]
 
   @@unique([userId, hostname, port])
   @@index([userId])
@@ -143,14 +152,23 @@ model DeploymentEnvironment {
   memoryLimit        String                    @default("512m")
   restartPolicy      String                    @default("unless-stopped")
   runMigrations      Boolean                   @default(false)
+  // "local" keeps the original single-host behaviour. A remote environment must reference a
+  // registered Server record; the hostname is never accepted from the browser at deploy time.
+  target             DeploymentTarget          @default(local)
+  serverId           String?
+  server             Server?                   @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  // Host ports are only unique within a Docker host. Two local environments still cannot share a
+  // port, and two remote environments may both use 8088 as long as they target different servers.
+  portScopeKey       String                    @default("local")
   createdAt          DateTime                  @default(now())
   updatedAt          DateTime                  @updatedAt
   deployments        Deployment[]
   runtimeVariables   DeploymentEnvironmentVariable[]
 
   @@unique([projectId, slug])
-  @@unique([hostPort])
+  @@unique([portScopeKey, hostPort])
   @@index([projectId, type])
+  @@index([serverId])
 }
 
 model DeploymentEnvironmentVariable {
@@ -186,6 +204,15 @@ model Deployment {
   stopReason      String?
   rollbackOfId    String?
   rolledBackFromId String?
+  // Remote deployments carry the same shape as local ones plus the remote-specific facts. The tag
+  // is recorded at create time because it is generated from this deployment's id.
+  target          DeploymentTarget    @default(local)
+  serverId        String?
+  server          Server?             @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  remoteImageTag  String?
+  transferBytes   BigInt?
+  transferStartedAt DateTime?
+  transferCompletedAt DateTime?
   startedAt       DateTime?
   finishedAt      DateTime?
   restartedAt     DateTime?
@@ -197,6 +224,7 @@ model Deployment {
   @@index([environmentId, status])
   @@index([containerId])
   @@index([rollbackOfId])
+  @@index([serverId])
 }
 
 model DeploymentLog {

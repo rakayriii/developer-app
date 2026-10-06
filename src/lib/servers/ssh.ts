@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
+import { execFile, spawn } from "node:child_process";
 
 // Fixed, non-configurable limits. The browser can never influence any of these.
 export const sshConnectionTimeoutMs = 10000;
@@ -52,15 +53,23 @@ export function probeScript(probe: ProbeName) {
 
 export function classifySshFailure(stderr: string, timedOut: boolean) {
   const text = stderr.toLowerCase();
+  // A remote command that connects and runs but exits non-zero is a normal outcome, not an SSH
+  // failure, and its own output is the only useful diagnostic. `docker start` rejecting a container,
+  // for example, prints the reason on stderr. Preserving it is what makes a remote failure
+  // diagnosable rather than a generic sentence that is the same for every cause.
+  const withReason = (code: ServerErrorCode, message: string) => {
+    const reason = safeDiagnostic(stderr);
+    return reason && !message.includes(reason) ? { code, message: `${message} Remote output: ${reason}` } : { code, message };
+  };
   if (timedOut) return { code: "command_timeout" as const, message: `SSH command timed out after ${sshCommandTimeoutMs} ms.` };
-  if (text.includes("host key verification failed") || text.includes("remote host identification has changed") || text.includes("host key for")) return { code: "host_key_mismatch" as const, message: "The remote host key does not match the trusted fingerprint." };
-  if (text.includes("no route to host") || text.includes("connection timed out") || text.includes("operation timed out") || text.includes("network is unreachable")) return { code: "host_unreachable" as const, message: "The host could not be reached." };
-  if (text.includes("connection refused")) return { code: "ssh_connection_failed" as const, message: "The host refused the SSH connection." };
-  if (text.includes("could not resolve hostname") || text.includes("name or service not known")) return { code: "host_unreachable" as const, message: "The host name could not be resolved." };
-  if (text.includes("permission denied") && (text.includes("publickey") || text.includes("authentication"))) return { code: "authentication_failed" as const, message: "SSH authentication was rejected." };
-  if (text.includes("permission denied")) return { code: "permission_denied" as const, message: "The remote user does not have permission to run the system probe." };
-  if (text.includes("no matching host key") || text.includes("host key is not known")) return { code: "host_key_mismatch" as const, message: "The remote host key does not match the trusted fingerprint." };
-  return { code: "ssh_connection_failed" as const, message: "The SSH connection failed." };
+  if (text.includes("host key verification failed") || text.includes("remote host identification has changed") || text.includes("host key for")) return withReason("host_key_mismatch", "The remote host key does not match the trusted fingerprint.");
+  if (text.includes("no route to host") || text.includes("connection timed out") || text.includes("operation timed out") || text.includes("network is unreachable")) return withReason("host_unreachable", "The host could not be reached.");
+  if (text.includes("connection refused")) return withReason("ssh_connection_failed", "The host refused the SSH connection.");
+  if (text.includes("could not resolve hostname") || text.includes("name or service not known")) return withReason("host_unreachable", "The host name could not be resolved.");
+  if (text.includes("permission denied") && (text.includes("publickey") || text.includes("authentication"))) return withReason("authentication_failed", "SSH authentication was rejected.");
+  if (text.includes("permission denied")) return withReason("permission_denied", "The remote user does not have permission to run the system probe.");
+  if (text.includes("no matching host key") || text.includes("host key is not known")) return withReason("host_key_mismatch", "The remote host key does not match the trusted fingerprint.");
+  return withReason("ssh_connection_failed", "The SSH command failed.");
 }
 
 // Remote stderr is summarised for the check log. Long opaque blobs are masked so a key or token can
@@ -173,11 +182,52 @@ export async function scanHostKeyWithCredential(hostname: string, port: number, 
 
 export type ConnectOptions = { hostname: string; port: number; username: string; privateKey: string; hostKeyLine: string };
 
-export type SshSession = { exec: (probe: ProbeName) => Promise<string>; close: () => Promise<void> };
+// One transport, two capabilities: run a command and collect its output, or stream a local readable
+// into a remote command's stdin. Both use the identical hardening, so the probe path and the
+// deployment path cannot drift apart.
+export type SshTransport = {
+  run: (command: string, options?: { timeoutMs?: number; maxBytes?: number }) => Promise<ExecResult>;
+  pipe: (command: string, source: Readable, options?: { timeoutMs?: number; maxBytes?: number }) => Promise<ExecResult>;
+  close: () => Promise<void>;
+};
+
+export type StreamResult = { stdout: string; stderr: string; code: number; timedOut: boolean; bytes: number };
+
+/**
+ * Streaming counterpart to runProcess. Used for the image transfer, where the local `docker save`
+ * output is piped into the remote `docker load` over stdin.
+ *
+ * The pipeline is assembled from two child processes and their pipes. No shell exists anywhere in
+ * this path: `shell` is never enabled, neither side is a shell pipeline, and the remote command is a
+ * fixed constant.
+ */
+export function spawnProcess(file: string, args: string[], source: Readable, timeoutMs: number, maxBytes = sshMaxOutputBytes): Promise<StreamResult> {
+  return new Promise((resolve) => {
+    let timedOut = false;
+    let bytes = 0;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(file, args, { shell: false, stdio: ["pipe", "pipe", "pipe"] });
+    const kill = () => { if (!child.killed) child.kill("SIGTERM"); setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000).unref(); };
+    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+
+    source.on("error", () => { child.stdin?.destroy(); kill(); });
+    // Backpressure is honoured so a multi-hundred-megabyte image is never buffered in memory.
+    source.pipe(child.stdin as Writable);
+    child.stdout.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (stdout.length < maxBytes) stdout += chunk.subarray(0, Math.max(0, maxBytes - stdout.length)).toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 8192) stderr += chunk.subarray(0, 8192).toString(); });
+
+    child.on("error", (error) => { clearTimeout(timer); resolve({ stdout, stderr: stderr || error.message, code: 255, timedOut, bytes }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ stdout, stderr, code: code ?? 0, timedOut, bytes }); });
+  });
+}
 
 // Opens a short-lived session whose host key is pinned to the exact line the server presented, with
 // StrictHostKeyChecking=yes. Verification is therefore enforced on every single command.
-export async function connect(options: ConnectOptions): Promise<SshSession> {
+export async function openSshTransport(options: ConnectOptions): Promise<SshTransport> {
   if (!(await hasBinary("ssh"))) throw new SshError("ssh_unavailable", "The OpenSSH client is not available on this host.", 503);
   if (!options.hostKeyLine.trim()) throw new SshError("host_key_untrusted", "Trust this host key before connecting.", 428);
   const directory = await mkdtemp(path.join(os.tmpdir(), "developer-os-ssh-"));
@@ -186,6 +236,7 @@ export async function connect(options: ConnectOptions): Promise<SshSession> {
   await writeFile(keyPath, options.privateKey, { mode: 0o600 });
   await writeFile(knownHostsPath, `${options.hostKeyLine}\n`, { mode: 0o600 });
 
+  // Fixed for every operation this application performs. No caller can add, remove, or reorder one.
   const base = [
     "-i", keyPath,
     "-p", String(options.port),
@@ -206,47 +257,64 @@ export async function connect(options: ConnectOptions): Promise<SshSession> {
     "-o", "RequestTTY=no",
   ];
   const target = `${options.username}@${options.hostname}`;
-
   const cleanup = async () => { await rm(directory, { recursive: true, force: true }); };
-  const run = async (script: string) => {
-    // A single SSH invocation, a single fixed script, and a single line of stdout. Some hosts emit a
-    // login banner on stdout, so only the final non-empty line is accepted.
-    const result = await runProcess("ssh", [...base, target, script], sshCommandTimeoutMs);
-    if (result.timedOut) throw new SshError("command_timeout", `SSH command timed out after ${sshCommandTimeoutMs} ms.`, 504);
-    if (result.code !== 0) {
-      const failure = classifySshFailure(result.stderr, false);
-      throw new SshError(failure.code, failure.message, 502);
-    }
-    const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-    return lines.length ? lines[lines.length - 1] : "";
+
+  const invoke = async (command: string, timeoutMs: number, maxBytes: number) => {
+    const result = await runProcess("ssh", [...base, target, command], timeoutMs, maxBytes);
+    if (result.timedOut) throw new SshError("command_timeout", `SSH command timed out after ${timeoutMs} ms.`, 504);
+    if (result.code !== 0) throw new SshError(...classify(result.stderr));
+    return result;
+  };
+
+  const classify = (stderr: string): [ServerErrorCode, string, number] => {
+    const failure = classifySshFailure(stderr, false);
+    return [failure.code, failure.message, 502];
+  };
+
+  const transport: SshTransport = {
+    run: (command, runOptions) => invoke(command, runOptions?.timeoutMs ?? sshCommandTimeoutMs, runOptions?.maxBytes ?? sshMaxOutputBytes),
+    pipe: async (command, source, pipeOptions) => {
+      const result = await spawnProcess("ssh", [...base, target, command], source, pipeOptions?.timeoutMs ?? sshCommandTimeoutMs, pipeOptions?.maxBytes ?? sshMaxOutputBytes);
+      if (result.timedOut) throw new SshError("command_timeout", `SSH command timed out after ${pipeOptions?.timeoutMs ?? sshCommandTimeoutMs} ms.`, 504);
+      if (result.code !== 0) throw new SshError(...classify(result.stderr));
+      return { stdout: result.stdout, stderr: result.stderr, code: result.code, timedOut: false };
+    },
+    close: cleanup,
   };
 
   // The handshake is retried briefly because sshd enforces per-source connection limits and can
   // refuse a burst even from a legitimate client. Only transient refusals are retried; an
   // authentication or host-key failure is returned immediately.
-  const handshake = async () => {
-    let last: SshError | null = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try { return await run(probeScript("arch")); }
-      catch (error) {
-        if (!(error instanceof SshError)) throw error;
-        last = error;
-        if (error.code !== "ssh_connection_failed" && error.code !== "host_unreachable") throw error;
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
-      }
+  let last: SshError | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await invoke(probeScript("arch"), sshConnectionTimeoutMs, sshMaxOutputBytes);
+      return transport;
+    } catch (error) {
+      if (!(error instanceof SshError)) { await cleanup(); throw error; }
+      last = error;
+      if (error.code !== "ssh_connection_failed" && error.code !== "host_unreachable") { await cleanup(); throw error; }
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
     }
-    throw last ?? new SshError("ssh_connection_failed", "The SSH connection failed.", 502);
-  };
-
-  try {
-    await handshake();
-  } catch (error) {
-    await cleanup();
-    throw error;
   }
+  await cleanup();
+  throw last ?? new SshError("ssh_connection_failed", "The SSH connection failed.", 502);
+}
 
+export type SshSession = { exec: (probe: ProbeName) => Promise<string>; close: () => Promise<void> };
+
+// Read-only probe session used by the server pages. It is a thin view over the same transport, so a
+// probe can only ever run one of the fixed allowlisted scripts.
+export async function connect(options: ConnectOptions): Promise<SshSession> {
+  const transport = await openSshTransport(options);
   return {
-    exec: async (probe: ProbeName) => run(probeScript(probe)),
-    close: cleanup,
+    // A single SSH invocation, a single fixed script, and a single line of stdout. Some hosts emit a
+    // login banner on stdout, so only the final non-empty line is accepted.
+    exec: async (probe: ProbeName) => {
+      const result = await transport.run(probeScript(probe));
+      const lines = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+      return lines.length ? lines[lines.length - 1] : "";
+    },
+    close: transport.close,
   };
 }

@@ -9,7 +9,8 @@ import { groupLogsByStage, normalizeLogResponse, type DeploymentLogEntry } from 
 type Project = { id: string; name: string; slug: string; localRepositoryPath: string | null };
 type Environment = { id: string; name: string; slug: string; type: string; hostPort: number; containerPort: number; healthPath: string; healthTimeoutMs: number; healthRetries: number; cpuLimit: string; memoryLimit: string; runMigrations: boolean };
 type HistoryEntry = { id: string; status: string; healthStatus: string | null; commitSha: string; imageTag: string; dockerfile: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; errorMessage: string | null };
-type Detail = { id: string; status: string; healthStatus: string | null; lastStage: string | null; errorMessage: string | null; stopReason: string | null; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; containerId: string | null; containerName: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; startedAt: string | null; finishedAt: string | null; restartedAt: string | null; createdAt: string; project: Project; environment: Environment; healthUrl: string; appUrl: string | null; history: HistoryEntry[] };
+type ServerRef = { id: string; name: string; status: string; dockerAvailable: boolean; dockerVersion: string | null; architecture: string | null; hostKeyTrusted: boolean };
+type Detail = { id: string; target?: "local" | "remote"; serverId?: string | null; server?: ServerRef | null; remoteImageTag?: string | null; transferBytes?: number | null; transferStartedAt?: string | null; transferCompletedAt?: string | null; healthVerifiedRemotely?: boolean; status: string; healthStatus: string | null; lastStage: string | null; errorMessage: string | null; stopReason: string | null; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; containerId: string | null; containerName: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; startedAt: string | null; finishedAt: string | null; restartedAt: string | null; createdAt: string; project: Project; environment: Environment; healthUrl: string; appUrl: string | null; history: HistoryEntry[] };
 type Runtime = { owned: boolean; container: { state: string; running: boolean; health: string; restartCount: number; startedAt: string; image: string; restartPolicy: string; ports: string; cpuPercent: string; memoryUsage: string; memoryPercent: string } | null; runtimeVariableNames: string[]; secretNames?: string[] };
 type Candidate = { id: string; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; healthStatus: string | null; status: string; createdAt: string; finishedAt: string | null };
 
@@ -138,7 +139,7 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
       <div>
         <div className="repository-kicker">Deployments / {detail.project.name} / {detail.environment.name}</div>
         <h1>{detail.project.name} <span className="deployment-slash">/</span> {detail.environment.name}</h1>
-        <p>Deployment {short(detail.id)} · commit {short(detail.commitSha)}</p>
+        <p>Deployment {short(detail.id)} · commit {short(detail.commitSha)} · {detail.target === "remote" ? `remote on ${detail.server?.name || "a registered server"}` : "local Docker"}</p>
       </div>
       <div className="header-actions deployment-header-status">
         <Badge value={detail.status} tone={statusTone(detail.status)} />
@@ -184,7 +185,19 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
         ["Image", { mono: detail.imageTag }],
         ["Container", { mono: dash(detail.containerName) }],
         ["Repository path", dash(detail.project.localRepositoryPath)],
+        ...(detail.target === "remote" ? [
+          ["Remote image", { mono: dash(detail.remoteImageTag) }],
+          ["Transferred", detail.transferBytes ? `${(detail.transferBytes / 1024 / 1024).toFixed(1)} MB` : "—"],
+        ] as [string, string | { mono: string }][] : []),
       ]} /></section>
+      {detail.target === "remote" ? <section className="panel detail-section"><div className="panel-header"><h2>Remote target</h2></div><Rows items={[
+        ["Server", detail.server?.name || "—"],
+        ["Connection", detail.server?.hostKeyTrusted ? "SSH verified" : "Host key untrusted"],
+        ["Docker", detail.server?.dockerAvailable ? dash(detail.server?.dockerVersion) : "Unavailable"],
+        ["Architecture", dash(detail.server?.architecture)],
+        ["Server status", dash(detail.server?.status)],
+        ["Health verified", detail.healthVerifiedRemotely ? "On the remote host over SSH" : "—"],
+      ]} /></section> : null}
       <section className="panel detail-section"><div className="panel-header"><h2>Endpoints</h2></div><Rows items={[
         ["Host port", detail.environment.hostPort],
         ["Container port", detail.environment.containerPort],

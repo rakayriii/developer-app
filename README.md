@@ -74,6 +74,57 @@ Deployment APIs are available under `/api/deployments` and `/api/projects/[id]/e
 npm run db:migrate
 ```
 
+## Remote deployment targets
+
+An environment targets either the **local** Docker daemon or a **remote** server. This is one deployment
+engine, not two: the lifecycle state graph, ownership model, logging, staging, error contract, and health
+result shape are shared, and only the target adapter differs.
+
+A remote deployment runs the same pipeline as a local one:
+
+```
+docker build (local)  ->  docker save | ssh docker load  ->  remote create + start
+                       ->  release command  ->  health verified on the remote host
+```
+
+The image is built locally and streamed over SSH, so no public registry and no registry credentials are
+involved. `docker save` is spawned as a child process and its stdout is piped into the SSH process's
+stdin, where a fixed `docker load` runs. `shell` is never enabled, no shell pipeline exists on either
+side, and no intermediate archive is written to disk.
+
+ssh concatenates its argument vector and the *remote login shell* re-parses it, so a remote "argument
+array" is not automatically safe. Every command shape is a literal template in
+`src/lib/deployments/remote/args.ts` and every substituted value is matched against a narrow character
+class. A value can therefore never become a shell operator. There is no generic remote command function
+and no `POST /api/servers/[id]/exec`; the only remote operations are the fixed per-operation functions in
+`src/lib/deployments/remote/docker.ts`.
+
+Remote runtime values are **not** passed as `docker run -e KEY=VALUE`, which would put a secret in the
+remote process argument list. They are written to a `0600` file on the remote host under `umask 077`,
+consumed by `docker create --env-file`, and removed before the container is started, inspected, or
+executed - on both the success and the failure path. Docker's env-file parser takes values verbatim and
+does not strip quotes, so values are written unquoted and the characters it cannot represent (newline,
+carriage return, NUL) are rejected rather than mis-encoded.
+
+Health verification runs **on the remote host** over the same pinned SSH connection, so neither the
+browser nor the Developer OS process ever fetches a remote URL. `curl` availability is confirmed by a
+capability probe first, and the target is always `127.0.0.1:<validated host port><validated health path>`.
+
+Before a replacement starts, the remote Docker state is inspected for the host port. A container
+recorded for the same environment *and the same server* is captured, stopped, and replaced. Anything
+else holding the port is never touched: the deployment fails with `remote_port_in_use`.
+
+Rollback reuses a known-good image that is verified to still exist **on the same server**, and creates a
+new deployment record. It never rebuilds from current source and never transfers a different image;
+a missing remote image reports `remote_rollback_image_missing`.
+
+Remote and local share the Phase 10 SSH hardening: encrypted private key, pinned host key with
+`StrictHostKeyChecking=yes`, `BatchMode=yes`, publickey-only authentication, no agent or forwarding, no
+TTY, and fixed server-side timeouts.
+
+New deployment log stages `transfer` and `remote_image` appear only for a remote deployment; a local one
+never emits them.
+
 ## API error contract
 
 Every API failure returns `application/json` with `{ code, message }` and an optional `details`

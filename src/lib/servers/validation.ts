@@ -8,6 +8,13 @@ export class ServerValidationError extends Error {
   status = 400;
 }
 
+// Returned when a server is still referenced and therefore cannot be removed. A distinct code lets the
+// UI explain the real reason instead of showing a generic validation failure.
+export class ServerInUseError extends Error {
+  code = "server_in_use";
+  status = 409;
+}
+
 // Returned when a server id does not exist, or exists but belongs to another user. The two cases are
 // deliberately indistinguishable so the API never confirms that another account's server exists.
 export class ServerNotFoundError extends Error {
