@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -27,20 +29,21 @@ export default function ProjectWorkspaceList() {
     const params = new URLSearchParams();
     if (search.trim()) params.set("search", search.trim());
     if (status !== "all") params.set("status", status);
-    fetch(`/api/projects?${params}`, { cache: "no-store" }).then(async (response) => { const body = await response.json(); if (!response.ok) throw body; return body; }).then((body) => { if (!cancelled) { setProjects(body.items || []); setLoading(false); setError(null); } }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setLoading(false); } });
+    fetch(`/api/projects?${params}`, { cache: "no-store" }).then(async (response) => { const result = await readApiJson<{ items?: Project[] }>(response); if (!result.ok) throw Object.assign(new Error(result.error.message), result.error); return result.data; }).then((body) => { if (!cancelled) { setProjects(body.items || []); setLoading(false); setError(null); } }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setLoading(false); } });
     return () => { cancelled = true; };
   }, [search, status]);
 
   const openCreate = () => {
     setCreateOpen(true); setFormError(""); setRepositoryLoading(true);
-    fetch("/api/github/repositories", { cache: "no-store" }).then(async (response) => { const body = await response.json(); if (!response.ok) throw body; return body; }).then((body) => setRepositories(body.items || [])).catch(() => setRepositories([])).finally(() => setRepositoryLoading(false));
+    fetch("/api/github/repositories", { cache: "no-store" }).then(async (response) => { const result = await readApiJson<{ items?: Repository[] }>(response); if (!result.ok) throw Object.assign(new Error(result.error.message), result.error); return result.data; }).then((body) => setRepositories(body.items || [])).catch(() => setRepositories([])).finally(() => setRepositoryLoading(false));
   };
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault(); setFormError("");
     const selected = repositories.find((repository) => String(repository.id) === form.repository);
     const response = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, description: form.description, status: form.status, githubOwner: selected?.owner || null, githubRepo: selected?.name || null }) });
-    const body = await response.json();
-    if (!response.ok) { setFormError(body.message || "Project could not be created."); return; }
+    const result = await readApiJson<{ project: Project }>(response);
+    if (!result.ok) { setFormError(result.error.message); return; }
+    const body = result.data;
     setProjects((current) => [body.project, ...current]); setCreateOpen(false); setForm({ name: "", description: "", status: "active", repository: "" });
   };
   const visibleRepositories = repositories.filter((repository) => `${repository.owner}/${repository.name}`.toLowerCase().includes(repositorySearch.toLowerCase()));

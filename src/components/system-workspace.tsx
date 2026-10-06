@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GpuMetrics, ProcessPage, SystemOverview, TemperatureMetrics } from "@/lib/system/types";
 
@@ -27,9 +29,9 @@ export default function SystemWorkspace() {
   const [sort, setSort] = useState<"cpu" | "memory" | "pid" | "name">("cpu");
 
   const loadOverview = useCallback(async () => {
-    try { const response = await fetch("/api/system/overview", { cache: "no-store" }); const body = await response.json() as SystemOverview & { message?: string }; if (response.status === 401) { setState("disconnected"); setError(body.message || "Connect GitHub to view system metrics."); return; } if (!response.ok) throw new Error(body.message || "System metrics could not be loaded."); setOverview(body); setState("live"); setError(""); if (body.cpu) setCpuHistory((history) => [...history, body.cpu?.usagePercent || 0].slice(-60)); if (body.memory) setMemoryHistory((history) => [...history, body.memory?.usagePercent || 0].slice(-60)); } catch (reason) { setState("error"); setError(reason instanceof Error ? reason.message : "System metrics could not be loaded."); }
+    try { const response = await fetch("/api/system/overview", { cache: "no-store" }); const result = await readApiJson<SystemOverview>(response); if (result.status === 401) { setState("disconnected"); setError(result.ok ? "Connect GitHub to view system metrics." : result.error.message); return; } if (!result.ok) throw new Error(result.error.message); const body = result.data; setOverview(body); setState("live"); setError(""); if (body.cpu) setCpuHistory((history) => [...history, body.cpu?.usagePercent || 0].slice(-60)); if (body.memory) setMemoryHistory((history) => [...history, body.memory?.usagePercent || 0].slice(-60)); } catch (reason) { setState("error"); setError(reason instanceof Error ? reason.message : "System metrics could not be loaded."); }
   }, []);
-  const loadProcesses = useCallback(async () => { try { const response = await fetch(`/api/system/processes?sort=${sort}&page=1&limit=50`, { cache: "no-store" }); if (!response.ok) return; setProcesses(await response.json() as ProcessPage); } catch { /* The overview remains useful when processes are unavailable. */ } }, [sort]);
+  const loadProcesses = useCallback(async () => { try { const response = await fetch(`/api/system/processes?sort=${sort}&page=1&limit=50`, { cache: "no-store" }); const result = await readApiJson<ProcessPage>(response); if (result.ok) setProcesses(result.data); } catch { /* The overview remains useful when processes are unavailable. */ } }, [sort]);
   useEffect(() => { const initial = window.setTimeout(() => void loadOverview(), 0); const interval = window.setInterval(() => void loadOverview(), 2000); return () => { window.clearTimeout(initial); window.clearInterval(interval); }; }, [loadOverview]);
   useEffect(() => { const initial = window.setTimeout(() => void loadProcesses(), 0); const interval = window.setInterval(() => void loadProcesses(), 4000); return () => { window.clearTimeout(initial); window.clearInterval(interval); }; }, [loadProcesses]);
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GitBranch, GitCommit, GitDiff, GitStatus } from "@/lib/git/types";
 
@@ -21,8 +23,8 @@ export default function GitWorkspace() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const query = useMemo(() => `?repository=${encodeURIComponent(repository)}`, [repository]);
-  const request = useCallback(async (url: string, init?: RequestInit) => { const response = await fetch(url, { ...init, cache: "no-store", headers: { "Content-Type": "application/json", ...(init?.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.message || "Git request failed."); return body; }, []);
-  const load = useCallback(async (showLoading = false) => { if (showLoading) setState("loading"); try { const [nextStatus, nextBranches, nextCommits, nextDiff] = await Promise.all([request(`/api/git/status${query}`), request(`/api/git/branches${query}`), request(`/api/git/log${query}&limit=50`), request(`/api/git/diff${query}&staged=${stagedDiff}`)]); setStatus(nextStatus); setBranches(nextBranches); setCommits(nextCommits); setDiff(nextDiff); setState("ready"); setError(""); } catch (reason) { setState("error"); setError(reason instanceof Error ? reason.message : "Git workspace unavailable."); } }, [query, request, stagedDiff]);
+  const request = useCallback(async <T,>(url: string, init?: RequestInit): Promise<T> => { const response = await fetch(url, { ...init, cache: "no-store", headers: { "Content-Type": "application/json", ...(init?.headers || {}) } }); const result = await readApiJson<T>(response); if (!result.ok) throw new Error(result.error.message || "Git request failed."); return result.data; }, []);
+  const load = useCallback(async (showLoading = false) => { if (showLoading) setState("loading"); try { const [nextStatus, nextBranches, nextCommits, nextDiff] = await Promise.all([request<GitStatus>(`/api/git/status${query}`), request<GitBranch[]>(`/api/git/branches${query}`), request<GitCommit[]>(`/api/git/log${query}&limit=50`), request<GitDiff>(`/api/git/diff${query}&staged=${stagedDiff}`)]); setStatus(nextStatus); setBranches(nextBranches); setCommits(nextCommits); setDiff(nextDiff); setState("ready"); setError(""); } catch (reason) { setState("error"); setError(reason instanceof Error ? reason.message : "Git workspace unavailable."); } }, [query, request, stagedDiff]);
   useEffect(() => { const initial = window.setTimeout(() => void load(true), 0); return () => window.clearTimeout(initial); }, [load]);
   useEffect(() => { const interval = window.setInterval(() => void load(), 4000); return () => window.clearInterval(interval); }, [load]);
   const mutate = async (url: string, body: Record<string, unknown>, success: string) => { try { await request(`${url}${query}`, { method: "POST", body: JSON.stringify(body) }); setNotice(success); setSelected([]); setMessage(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Git operation failed."); } };

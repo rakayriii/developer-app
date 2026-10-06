@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { groupLogsByStage, normalizeLogResponse, type DeploymentLogEntry } from "@/lib/deployments/logs";
@@ -33,12 +35,16 @@ export default function DeploymentWorkspace() {
   const load = async () => {
     try {
       const [deploymentResponse, projectResponse] = await Promise.all([fetch("/api/deployments", { cache: "no-store" }), fetch("/api/projects?per_page=50", { cache: "no-store" })]);
-      const deploymentBody = await deploymentResponse.json();
-      const projectBody = await projectResponse.json();
-      if (!deploymentResponse.ok) throw new Error(deploymentBody.message || "Deployments could not be loaded.");
-      if (!projectResponse.ok) throw new Error(projectBody.message || "Projects could not be loaded.");
+      const [deploymentResult, projectResult] = await Promise.all([
+        readApiJson<{ items: Deployment[]; environments: EnvironmentSummary[]; message?: string }>(deploymentResponse),
+        readApiJson<{ items: Project[]; message?: string }>(projectResponse),
+      ]);
+      if (!deploymentResult.ok) throw new Error(deploymentResult.error.message);
+      if (!projectResult.ok) throw new Error(projectResult.error.message);
+      const deploymentBody = deploymentResult.data;
+      const projectBody = projectResult.data;
       const projectItems = (projectBody.items || []) as Project[];
-      const environmentLists = await Promise.all(projectItems.map(async (project) => { const response = await fetch(`/api/projects/${project.id}/environments`, { cache: "no-store" }); const body = await response.json(); if (!response.ok) throw new Error(body.message || `Environments for ${project.name} could not be loaded.`); return body as Environment[]; }));
+      const environmentLists = await Promise.all(projectItems.map(async (project) => { const response = await fetch(`/api/projects/${project.id}/environments`, { cache: "no-store" }); const result = await readApiJson<Environment[]>(response); if (!result.ok) throw new Error(`Environments for ${project.name} could not be loaded. ${result.error.message}`); return result.data; }));
       const summaries = ((deploymentBody.environments || []) as EnvironmentSummary[]).filter((summary) => projectItems.some((project) => project.id === summary.projectId));
       setProjects(projectItems);
       setEnvironments(environmentLists.flat());
@@ -58,7 +64,8 @@ export default function DeploymentWorkspace() {
     const response = await fetch(`/api/deployments/${deployment.id}/logs`, { cache: "no-store" });
     // Normalized because the endpoint returns { entries, count }; assigning the raw body would
     // leave `logs` an object and silently render the empty state.
-    if (response.ok) setLogs(normalizeLogResponse(await response.json()));
+    const result = await readApiJson(response);
+    if (result.ok) setLogs(normalizeLogResponse(result.data));
   };
 
   useEffect(() => { const initial = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(initial); }, []);
@@ -75,7 +82,8 @@ export default function DeploymentWorkspace() {
     if (!projectId) return [];
     try {
       const probe = await fetch(`/api/deployments/runtime-variables`, { cache: "no-store" });
-      if (probe.ok) return (await probe.json()) as RuntimeVariable[];
+      const result = await readApiJson<RuntimeVariable[]>(probe);
+      if (result.ok) return result.data;
     } catch { /* catalog is optional */ }
     return [];
   };
@@ -89,13 +97,14 @@ export default function DeploymentWorkspace() {
     setError("");
     try {
       const response = await fetch(`/api/projects/${form.projectId}/environments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, type: form.type, repositoryPath: form.repositoryPath, hostPort: Number(form.hostPort), containerPort: Number(form.containerPort), healthPath: form.healthPath, runMigrations: form.runMigrations }) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || "Environment could not be created.");
+      const createdEnvResult = await readApiJson<{ id: string; name: string }>(response);
+      if (!createdEnvResult.ok) throw new Error(createdEnvResult.error.message);
+      const body = createdEnvResult.data;
       const variables = Object.entries(form.variables).filter(([, value]) => value.trim()).map(([name, value]) => ({ name, value }));
       if (variables.length) {
         const variableResponse = await fetch(`/api/projects/${form.projectId}/environments/${body.id}/variables`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variables }) });
-        const variableBody = await variableResponse.json();
-        if (!variableResponse.ok) throw new Error(variableBody.message || "Runtime variables could not be saved.");
+        const variableResult = await readApiJson<unknown>(variableResponse);
+        if (!variableResult.ok) throw new Error(variableResult.error.message);
       }
       setFormOpen(false);
       setNotice(`${body.name} environment created.`);
@@ -113,11 +122,13 @@ export default function DeploymentWorkspace() {
     setError("");
     try {
       const createResponse = await fetch("/api/deployments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: environment.projectId, environmentId: environment.id }) });
-      const created = await createResponse.json();
-      if (!createResponse.ok) throw new Error(created.message || "Deployment could not be created.");
+      const createResult = await readApiJson<{ id: string }>(createResponse);
+      if (!createResult.ok) throw new Error(createResult.error.message);
+      const created = createResult.data;
       const deployResponse = await fetch(`/api/deployments/${created.id}/deploy`, { method: "POST" });
-      const deployed = await deployResponse.json();
-      if (!deployResponse.ok) throw new Error(deployed.message || "Deployment failed.");
+      const deployedResult = await readApiJson<Deployment>(deployResponse);
+      if (!deployedResult.ok) throw new Error(deployedResult.error.message);
+      const deployed = deployedResult.data;
       setNotice(`${environment.name} deployment completed.`);
       await load();
       setSelected(deployed);
@@ -132,8 +143,9 @@ export default function DeploymentWorkspace() {
     if (!selected || !window.confirm(name === "rollback" ? "Rollback to the previous successful deployment?" : "Stop this deployment?")) return;
     try {
       const response = await fetch(`/api/deployments/${selected.id}/${name}`, { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || `${name} failed.`);
+      const actionResult = await readApiJson<Deployment>(response);
+      if (!actionResult.ok) throw new Error(actionResult.error.message);
+      const body = actionResult.data;
       setNotice(`${name} completed.`);
       await load();
       setSelected(body);

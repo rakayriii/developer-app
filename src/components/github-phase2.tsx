@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useEffect, useState } from "react";
 
 type Account = { login: string; name: string | null; avatarUrl: string; htmlUrl: string };
@@ -9,6 +11,7 @@ type Issue = { id: number; number: number; title: string; repository: string; au
 type Commit = { sha: string; message: string; repository: string; author: string; date: string; url: string };
 type Activity = { type: string; action: string; repository: string; title: string; actor: string; timestamp: string; url: string };
 type ErrorState = { code?: string; message?: string };
+type GithubPayload = { account?: Account; repositories?: Repository[]; items?: unknown[]; activity?: Activity[] };
 
 function date(value: string) {
   return value ? new Date(value).toLocaleDateString() : "-";
@@ -43,14 +46,14 @@ export default function GithubPhase2({ page, tab, setTab }: { page: string; tab:
 
   useEffect(() => {
     let cancelled = false;
-    fetch(endpoint, { cache: "no-store" }).then(async (response) => { const body = await response.json(); if (!response.ok) throw body; return body; }).then((body) => {
+    fetch(endpoint, { cache: "no-store" }).then(async (response) => { const result = await readApiJson<GithubPayload>(response); if (!result.ok) throw Object.assign(new Error(result.error.message), result.error); return result.data; }).then((body) => {
       if (cancelled) return;
       if (body.account) setAccount(body.account);
-      if (activeTab === "Repositories") { setRepositories(body.repositories || []); setAccount(body.account); }
-      if (activeTab === "Pull Requests") setPullRequests(body.items || []);
-      if (activeTab === "Issues") setIssues(body.items || []);
-      if (activeTab === "Commits") setCommits(body.items || []);
-      if (activeTab === "Activity") setActivity(body.items || []);
+      if (activeTab === "Repositories") setRepositories(body.repositories || []);
+      if (activeTab === "Pull Requests") setPullRequests((body.items || []) as PullRequest[]);
+      if (activeTab === "Issues") setIssues((body.items || []) as Issue[]);
+      if (activeTab === "Commits") setCommits((body.items || []) as Commit[]);
+      if (activeTab === "Activity") setActivity((body.items || []) as Activity[]);
       setLoading(false);
     }).catch((reason: ErrorState) => { if (!cancelled) { setError(reason); setLoading(false); } });
     return () => { cancelled = true; };

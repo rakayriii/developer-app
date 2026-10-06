@@ -4,6 +4,7 @@ import { probeNames, SshError, scanHostKey, scanHostKeyWithCredential, connect, 
 import { assembleProbeResult } from "./probe";
 import { credentialFingerprint, validateServerInput, ServerConflictError, ServerNotFoundError, ServerValidationError } from "./validation";
 import { toPublicServer as publicServer, type ServerRecord, type PublicServer } from "./serialize";
+import { isPrismaUnavailable } from "@/lib/api/contract";
 
 type ServerRow = ServerRecord;
 
@@ -146,6 +147,8 @@ const structuredErrors = [SshError, ServerValidationError, ServerNotFoundError, 
 
 export function serverError(error: unknown) {
   for (const kind of structuredErrors) if (error instanceof kind) return { code: (error as { code: string }).code, message: (error as Error).message, status: (error as { status: number }).status };
+  // A database outage is a 503 with a specific code, never an opaque 500 or an empty list.
+  if (isPrismaUnavailable(error)) return { code: "database_unavailable", message: "The application database is unavailable. Start PostgreSQL and try again.", status: 503 };
   // A raw Prisma failure must not leak a schema or connection detail to the browser.
   if (typeof error === "object" && error !== null && "code" in error && typeof (error as { code: unknown }).code === "string" && /^P\d{4}$/.test((error as { code: string }).code)) return { code: "server_error", message: "The server operation failed.", status: 500 };
   return { code: "server_error", message: "The server operation failed.", status: 500 };

@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
@@ -28,9 +30,9 @@ export default function ServerWorkspace() {
   const load = useCallback(async () => {
     try {
       const response = await fetch("/api/servers", { cache: "no-store" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || "Servers could not be loaded.");
-      setItems((body.items || []) as Server[]);
+      const listResult = await readApiJson<{ items?: Server[] }>(response);
+      if (!listResult.ok) throw new Error(listResult.error.message);
+      setItems(listResult.data.items || []);
       setState("ready");
       setError("");
     } catch (reason) {
@@ -49,8 +51,9 @@ export default function ServerWorkspace() {
     setError("");
     try {
       const response = await fetch("/api/servers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, hostname: form.hostname, port: Number(form.port), username: form.username, authMethod: "key", privateKey: form.privateKey }) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || "Server could not be added.");
+      const addResult = await readApiJson<Server>(response);
+      if (!addResult.ok) throw new Error(addResult.error.message);
+      const body = addResult.data;
       // The private key is never kept in component state after submission.
       setForm(emptyForm);
       setFormOpen(false);
@@ -71,13 +74,14 @@ export default function ServerWorkspace() {
     try {
       if (action === "remove") {
         const response = await fetch(`/api/servers/${server.id}`, { method: "DELETE" });
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.message || "Server could not be removed.");
+        const removeResult = await readApiJson<unknown>(response);
+        if (!removeResult.ok) throw new Error(removeResult.error.message);
         setNotice(`${server.name} removed.`);
       } else {
         const response = await fetch(`/api/servers/${server.id}/${action}`, { method: "POST" });
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.message || `${action} failed.`);
+        const actionResult = await readApiJson<{ hostKeyFingerprint?: string; server?: { status: string }; check?: { status: string } }>(response);
+        if (!actionResult.ok) throw new Error(actionResult.error.message);
+        const body = actionResult.data;
         setNotice(action === "trust" ? `Host key trusted: ${body.hostKeyFingerprint || "recorded"}.` : `${action} finished: ${body.server?.status || body.check?.status || "done"}.`);
       }
       await load();

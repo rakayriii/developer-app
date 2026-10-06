@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -34,10 +36,12 @@ export default function ServerDetail({ serverId }: { serverId: string }) {
   const load = useCallback(async () => {
     try {
       const [serverResponse, checkResponse] = await Promise.all([fetch(`/api/servers/${serverId}`, { cache: "no-store" }), fetch(`/api/servers/${serverId}/checks`, { cache: "no-store" })]);
-      const body = await serverResponse.json();
-      if (!serverResponse.ok) throw new Error(body.message || "Server could not be loaded.");
+      const serverResult = await readApiJson<Server>(serverResponse);
+      if (!serverResult.ok) throw new Error(serverResult.error.message);
+      const body = serverResult.data;
       setServer(body as Server);
-      if (checkResponse.ok) setChecks(((await checkResponse.json()) as { items: Check[] }).items);
+      const checkResult = await readApiJson<{ items: Check[] }>(checkResponse);
+      if (checkResult.ok) setChecks(checkResult.data.items);
       setState("ready");
       setError("");
     } catch (reason) {
@@ -54,7 +58,8 @@ export default function ServerDetail({ serverId }: { serverId: string }) {
       if (document.hidden || busy) return;
       try {
         const response = await fetch(`/api/servers/${serverId}`, { cache: "no-store" });
-        if (response.ok) setServer((await response.json()) as Server);
+        const result = await readApiJson<Server>(response);
+        if (result.ok) setServer(result.data);
       } catch { /* keep the last known state */ }
     };
     const interval = window.setInterval(tick, 60000);
@@ -65,8 +70,9 @@ export default function ServerDetail({ serverId }: { serverId: string }) {
     setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch(`/api/servers/${serverId}/${action}`, { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || `${action} failed.`);
+      const actionResult = await readApiJson<{ hostKeyFingerprint?: string; server?: { status: string }; check?: { status: string } }>(response);
+      if (!actionResult.ok) throw new Error(actionResult.error.message);
+      const body = actionResult.data;
       setNotice(action === "trust" ? `Host key trusted: ${body.hostKeyFingerprint || "recorded"}.` : `${action} finished with status ${body.server?.status || body.check?.status || "unknown"}.`);
       await load();
     } catch (reason) {
@@ -82,8 +88,8 @@ export default function ServerDetail({ serverId }: { serverId: string }) {
     setBusy(true); setError(""); setNotice("");
     try {
       const response = await fetch(`/api/servers/${serverId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ privateKey: keyDraft }) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.message || "Private key could not be updated.");
+      const credentialResult = await readApiJson<Server>(response);
+      if (!credentialResult.ok) throw new Error(credentialResult.error.message);
       setKeyDraft("");
       setEditOpen(false);
       if (keyInput.current) keyInput.current.value = "";
@@ -99,7 +105,8 @@ export default function ServerDetail({ serverId }: { serverId: string }) {
   const remove = async () => {
     if (!server || !window.confirm(`Remove ${server.name}? The stored credential is deleted. Nothing on the remote host is changed.`)) return;
     const response = await fetch(`/api/servers/${server.id}`, { method: "DELETE" });
-    if (!response.ok) { const body = await response.json(); setError(body.message || "Server could not be removed."); return; }
+    const result = await readApiJson<unknown>(response);
+    if (!result.ok) { setError(result.error.message); return; }
     router.push("/servers");
     router.refresh();
   };

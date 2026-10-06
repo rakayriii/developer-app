@@ -1,5 +1,7 @@
 "use client";
 
+import { readApiJson } from "@/lib/api/client";
+
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -44,8 +46,9 @@ export default function TerminalWorkspace() {
     try {
       const instance = terminal.current;
       const response = await fetch("/api/terminal/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cols: instance?.cols || 120, rows: instance?.rows || 30 }) });
-      const body = await response.json();
-      if (!response.ok) throw body;
+      const result = await readApiJson<{ sessionId: string; serverRoot?: boolean }>(response);
+      if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
+      const body = result.data;
       sessionId.current = body.sessionId;
       setSessionLabel(body.sessionId.slice(0, 8));
       setServerRoot(Boolean(body.serverRoot));
