@@ -49,6 +49,27 @@ enum DeploymentTarget {
   remote
 }
 
+// How a domain terminates TLS.
+//
+// Caddy has exactly one self-signed mechanism: its own local certificate authority, selected with
+// `tls internal`. There is no separate "self-signed" mode to configure, so the two ideas that are often
+// listed separately collapse into one honest value here rather than into two modes that behave alike.
+//
+// "automatic" is Caddy's default behaviour and asks Let's Encrypt over ACME. It requires the host to be
+// reachable on port 80 for HTTP-01 with DNS already pointing at it.
+enum TlsMode {
+  none
+  internal_ca
+  automatic
+}
+
+enum DomainStatus {
+  pending
+  active
+  failed
+  disabled
+}
+
 model User {
   id          String    @id @default(cuid())
   githubLogin String    @unique
@@ -94,6 +115,7 @@ model Server {
   checks                ServerCheck[]
   environments          DeploymentEnvironment[]
   deployments           Deployment[]
+  domains               DeploymentDomain[]
 
   @@unique([userId, hostname, port])
   @@index([userId])
@@ -219,12 +241,45 @@ model Deployment {
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   logs            DeploymentLog[]
+  domains         DeploymentDomain[]
 
   @@index([projectId, createdAt])
   @@index([environmentId, status])
   @@index([containerId])
   @@index([rollbackOfId])
   @@index([serverId])
+}
+
+// A hostname routed through the reverse proxy on a registered server to one deployment's published port.
+// There is deliberately no global domain table: a domain exists only as the exposure of a deployment the
+// authenticated user already owns, on a server they already own.
+model DeploymentDomain {
+  id            String       @id @default(cuid())
+  deploymentId  String
+  deployment    Deployment   @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  serverId      String
+  server        Server       @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  hostname      String
+  // true when the operator deliberately permitted a localhost or bare-address name. The validator refuses
+  // such a name by default, so this records a decision rather than gating validation at request time.
+  allowLocal    Boolean      @default(false)
+  tlsEnabled    Boolean      @default(true)
+  tlsMode       TlsMode      @default(internal_ca)
+  status        DomainStatus @default(pending)
+  statusCode    String?
+  statusMessage String?
+  // Fingerprint of the proxy configuration this domain was last activated with, so a later reconcile can
+  // tell whether the running proxy still reflects this record.
+  configHash    String?
+  lastCheckedAt DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // One hostname may be routed only once per server. Two domains competing for the same name would make
+  // the generated configuration ambiguous.
+  @@unique([serverId, hostname])
+  @@index([deploymentId])
+  @@index([serverId, status])
 }
 
 model DeploymentLog {

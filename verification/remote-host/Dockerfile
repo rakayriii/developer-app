@@ -14,6 +14,9 @@ RUN apk add --no-cache curl
 RUN apk add --no-cache openssh-client-default=9.9_p2-r0 openssh-client-common=9.9_p2-r0 \
  && apk add --no-cache openssh-server
 
+# A placeholder so the image builds and can be run standalone. The verification harness generates a fresh
+# throwaway key per run and installs its public half at startup through REMOTE_KEY (see start-remote.sh),
+# which keeps this committed fixture stable rather than rewritten on every run.
 COPY authorized_keys /root/.ssh/authorized_keys
 RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
  && ssh-keygen -A \
@@ -24,5 +27,6 @@ RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
 COPY start-remote.sh /usr/local/bin/start-remote.sh
 RUN chmod +x /usr/local/bin/start-remote.sh
 
-EXPOSE 22
+# Phase 12: the reverse proxy binds 80 and 443 on this host, so they are published.
+EXPOSE 22 80 443
 ENTRYPOINT ["/usr/local/bin/start-remote.sh"]

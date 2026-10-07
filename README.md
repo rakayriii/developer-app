@@ -125,6 +125,62 @@ TTY, and fixed server-side timeouts.
 New deployment log stages `transfer` and `remote_image` appear only for a remote deployment; a local one
 never emits them.
 
+## Application exposure
+
+A remote deployment is reachable on its published host port. A **hostname** puts a reverse proxy in front
+of it, so the deployment is reached as `https://app.example.com` instead of `server:port`.
+
+The reverse proxy is **Caddy**, running as one long-lived container per registered server, managed by
+Developer OS. Its configuration is written to a host directory bind-mounted at `/data`, validated with
+`caddy validate`, and then applied with `caddy reload`, so adding a hostname never restarts the proxy and
+never interrupts the other hostnames on that server.
+
+```
+Internet → server :80/:443 → Caddy → 127.0.0.1:<environment host port> → deployment container
+```
+
+The upstream host is the literal `127.0.0.1` and only the port is substituted, so no caller-supplied value
+can decide which host the proxy reaches.
+
+### Hostnames
+
+A hostname is validated before anything is created. Rejected: protocols, paths, query strings, fragments,
+whitespace, ports, shell metacharacters, Caddy syntax characters, wildcards, malformed DNS labels, single
+labels, and names longer than 253 characters. Only case and a single trailing root dot are normalised,
+because both name the same host; nothing else is rewritten. `localhost` and bare IP addresses are refused
+unless explicitly allowed for development.
+
+### Ownership
+
+A hostname is never global. It belongs to a deployment the authenticated user owns, on a server that
+deployment actually runs on — the server is taken from the deployment, never from the request. Every read
+is scoped by the server's owner, a hostname can be routed only once per server, and a server that still
+routes traffic cannot be deleted.
+
+### TLS
+
+`none`, `internal_ca`, and `automatic`.
+
+Caddy has exactly one self-signed mechanism — its own local certificate authority (`tls internal`) — so
+"self-signed" and "internal CA" are one mode rather than two modes that behave alike. `automatic` asks
+Let's Encrypt over ACME, which needs the server reachable on port 80 with DNS already pointing at it.
+
+With `internal_ca` the proxy serves real HTTPS with a certificate chaining to Caddy's root, which the API
+reports so a client can be told exactly what to install.
+
+The admin endpoint is bound to the container's loopback because `caddy reload` depends on it. Only ports
+80 and 443 are published, so nothing outside the container can reach it.
+
+### Lifecycle
+
+A hostname follows its **environment**, not one container. A redeploy or a rollback replaces the
+deployment record while keeping the published port, so the hostname keeps serving under the same name.
+The hostname is withdrawn only when nothing on that environment is serving, and deploy, restart, rollback
+and stop all reconcile the proxy, so withdrawal is immediate rather than waiting for an unrelated change.
+
+Removing the last hostname on a server stops and removes that server's proxy rather than leaving it
+holding ports 80 and 443 for nothing. Its data directory is kept, so certificates survive.
+
 ## API error contract
 
 Every API failure returns `application/json` with `{ code, message }` and an optional `details`

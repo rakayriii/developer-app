@@ -6,12 +6,13 @@ import { discoverDockerfile } from "./dockerfile";
 import { withDeploymentLock } from "./lock";
 import { DeploymentConflictError } from "./errors";
 import { hasDeploymentInProgress } from "./state";
-import { assertTransition, type DeploymentStatus } from "./lifecycle";
+import { assertTransition, deploymentStatuses, type DeploymentStatus } from "./lifecycle";
 import { assertOwnedContainerName, ownedContainerName } from "./operations";
 import { redactSecrets } from "./runtime-env";
 import { resolveRuntimeEnvironment } from "./runtime-store";
 import { deploymentStages, stageStream, StagedFailure, type Stage } from "./stages";
 import { resolveDeploymentOps, buildImage, verifyOwnedContainer, type DeploymentOps, type StageLogger } from "./target-runtime";
+import { reconcileForDeployment } from "@/lib/exposure/service";
 import { RemoteDeploymentError } from "./remote/server";
 
 export { deploymentStages, StagedFailure };
@@ -135,6 +136,8 @@ export async function deployDeployment(deploymentId: string) {
         }
         await stageLog(current.id, "health_check", health.message, secrets);
         await setStatus(current.id, "starting", "running", { healthStatus: "healthy", finishedAt: new Date() });
+        // This deployment now serves the environment's port, so any hostname routed there resolves to it.
+        await reconcileForDeployment(current.id);
         return prisma.deployment.findUnique({ where: { id: current.id } });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Deployment failed.";
@@ -160,7 +163,24 @@ export async function stopDeployment(deploymentId: string, reason = "operator_re
     if (!deployment.containerId) throw new DeploymentDockerError("no_owned_container", "This deployment has no container to stop.", 409);
     const name = assertOwnedContainerName(deployment);
     return withOps(deployment, async (ops, stageLog) => {
-      if (!(await ops.containerExists(deployment.containerId as string, name))) throw new DeploymentDockerError("container_not_found", `Owned container ${name} no longer exists.`, 409);
+      if (!(await ops.containerExists(deployment.containerId as string, name))) {
+        // Stopping must be idempotent. A redeploy or a rollback already stopped and removed this
+        // container and set the record to a terminal status, so there is nothing left to stop and
+        // reporting a conflict would make teardown and retry fail on a state that is already correct.
+        // The recorded container id is cleared so the record stops claiming one.
+        //
+        // These are the terminal DeploymentStatus values, none of which has a container that should
+        // still be running. A record that claims a container which vanished while it was live is a
+        // different situation: that is drift worth reporting rather than absorbing.
+        // Every DeploymentStatus that has no container that should still be running. Derived from the canonical
+        // list rather than retyped, so adding a status in lifecycle.ts cannot silently leave it out.
+        const terminal = deploymentStatuses.filter((status) => !["pending", "building", "starting", "running", "unhealthy", "stopping"].includes(status));
+        if (terminal.includes(deployment.status as DeploymentStatus)) {
+          await stageLog(deployment.id, "stop", `Container ${name} is already gone; nothing to stop.`, secrets);
+          return prisma.deployment.update({ where: { id: deployment.id }, data: { containerId: null, lastStage: "stop" } });
+        }
+        throw new DeploymentDockerError("container_not_found", `Owned container ${name} no longer exists.`, 409);
+      }
       const wasRunning = ["running", "unhealthy", "starting"].includes(deployment.status);
       if (wasRunning) {
         await setStatus(deployment.id, deployment.status, "stopping", { stopReason: reason });
@@ -171,7 +191,10 @@ export async function stopDeployment(deploymentId: string, reason = "operator_re
       }
       await ops.stopContainer(deployment.containerId as string, name);
       await stageLog(deployment.id, "stop", `Container ${name} stopped and removed. Logs and metadata are preserved.`, secrets);
-      return prisma.deployment.update({ where: { id: deployment.id }, data: { status: "stopped", lastStage: "stop", healthStatus: "stopped", finishedAt: new Date(), stopReason: reason } });
+      const stopped = await prisma.deployment.update({ where: { id: deployment.id }, data: { status: "stopped", lastStage: "stop", healthStatus: "stopped", finishedAt: new Date(), stopReason: reason } });
+      // Nothing serves this deployment any more, so any hostname routed to it has to be withdrawn.
+      await reconcileForDeployment(deployment.id);
+      return stopped;
     });
   });
 }
@@ -199,11 +222,15 @@ export async function restartDeployment(deploymentId: string) {
           if (health.bodyExcerpt) await stageLog(deployment.id, "health_check", `Response excerpt: ${health.bodyExcerpt}`, secrets);
           await ops.captureDiagnostics(deployment.id, name);
           await stageLog(deployment.id, "restart", `[health_check] Restarted container is not healthy: ${health.message}`, secrets);
-          return prisma.deployment.update({ where: { id: deployment.id }, data: { status: "unhealthy", lastStage: "health_check", healthStatus: "unhealthy", errorMessage: `[health_check] ${health.message}`, restartedAt: new Date() } });
+          const unhealthy = await prisma.deployment.update({ where: { id: deployment.id }, data: { status: "unhealthy", lastStage: "health_check", healthStatus: "unhealthy", errorMessage: `[health_check] ${health.message}`, restartedAt: new Date() } });
+          await reconcileForDeployment(deployment.id);
+          return unhealthy;
         }
         await stageLog(deployment.id, "health_check", health.message, secrets);
         await stageLog(deployment.id, "restart", `Restart completed and health check passed.`, secrets);
-        return prisma.deployment.update({ where: { id: deployment.id }, data: { status: "running", lastStage: "restart", healthStatus: "healthy", errorMessage: null, restartedAt: new Date() } });
+        const restarted = await prisma.deployment.update({ where: { id: deployment.id }, data: { status: "running", lastStage: "restart", healthStatus: "healthy", errorMessage: null, restartedAt: new Date() } });
+        await reconcileForDeployment(deployment.id);
+        return restarted;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Restart failed.";
         await ops.captureDiagnostics(deployment.id, name);
@@ -291,6 +318,7 @@ export async function rollbackDeployment(deploymentId: string, targetDeploymentI
         await stageLog(rollback.id, "health_check", health.message, secrets);
         await setStatus(rollback.id, "starting", "running", { healthStatus: "healthy", finishedAt: new Date() });
         await prisma.deployment.update({ where: { id: current.id }, data: { status: "rolled_back", lastStage: "rollback", healthStatus: "rolled_back", finishedAt: new Date(), stopReason: "rolled_back" } });
+        await reconcileForDeployment(rollback.id);
         return prisma.deployment.findUnique({ where: { id: rollback.id } });
       } catch (error) {
         if (container) await ops.captureDiagnostics(rollback.id, name || container);

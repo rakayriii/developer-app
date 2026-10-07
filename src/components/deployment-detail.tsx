@@ -13,8 +13,12 @@ type ServerRef = { id: string; name: string; status: string; dockerAvailable: bo
 type Detail = { id: string; target?: "local" | "remote"; serverId?: string | null; server?: ServerRef | null; remoteImageTag?: string | null; transferBytes?: number | null; transferStartedAt?: string | null; transferCompletedAt?: string | null; healthVerifiedRemotely?: boolean; status: string; healthStatus: string | null; lastStage: string | null; errorMessage: string | null; stopReason: string | null; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; containerId: string | null; containerName: string | null; rollbackOfId: string | null; rolledBackFromId: string | null; startedAt: string | null; finishedAt: string | null; restartedAt: string | null; createdAt: string; project: Project; environment: Environment; healthUrl: string; appUrl: string | null; history: HistoryEntry[] };
 type Runtime = { owned: boolean; container: { state: string; running: boolean; health: string; restartCount: number; startedAt: string; image: string; restartPolicy: string; ports: string; cpuPercent: string; memoryUsage: string; memoryPercent: string } | null; runtimeVariableNames: string[]; secretNames?: string[] };
 type Candidate = { id: string; commitSha: string; branch: string | null; imageTag: string; dockerfile: string | null; healthStatus: string | null; status: string; createdAt: string; finishedAt: string | null };
+type Domain = { id: string; deploymentId: string; serverId: string; hostname: string; tlsEnabled: boolean; tlsMode: string; status: string; statusCode: string | null; statusMessage: string | null; routedDeploymentId: string | null; upstreamPort: number | null; serverName: string | null; deploymentStatus: string | null; createdAt: string; lastCheckedAt: string | null };
 
-const tabs = ["Overview", "Runtime", "Logs", "History", "Environment"] as const;
+// Application exposure only exists for a remote deployment, since a hostname is routed on a registered
+// server rather than on the local Docker host. The tab is absent rather than disabled elsewhere.
+const baseTabs = ["Overview", "Runtime", "Logs", "History", "Environment"] as const;
+const tabs = [...baseTabs, "Domains"] as const;
 type Tab = (typeof tabs)[number];
 
 const short = (value: string) => value.slice(0, 12);
@@ -64,6 +68,10 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [domains, setDomains] = useState<Domain[]>([]);
+  const [hostname, setHostname] = useState("");
+  const [tlsMode, setTlsMode] = useState("internal_ca");
+  const [allowLocal, setAllowLocal] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -93,6 +101,33 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
     return () => window.clearInterval(interval);
   }, [detail, deploymentId]);
 
+  const loadDomains = useCallback(async () => {
+    const response = await fetch(`/api/domains?deploymentId=${encodeURIComponent(deploymentId)}`, { cache: "no-store" });
+    const result = await readApiJson<{ items: Domain[] }>(response);
+    if (!result.ok) { setError(result.error.message); return; }
+    setDomains(result.data.items);
+  }, [deploymentId]);
+
+  const domainAction = async (action: "create" | "enable" | "disable" | "delete", id?: string) => {
+    setBusy(action); setError(""); setNotice("");
+    try {
+      const response = await fetch(
+        action === "create" ? "/api/domains" : `/api/domains/${encodeURIComponent(id ?? "")}`,
+        action === "create"
+          ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deploymentId, hostname, tlsMode, tlsEnabled: tlsMode !== "none", allowLocal }) }
+          : { method: action === "delete" ? "DELETE" : "POST", ...(action === "delete" ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) }) },
+      );
+      const result = await readApiJson(response);
+      if (!result.ok) throw new Error(result.error.message);
+      if (action === "create") { setHostname(""); setAllowLocal(false); setNotice(`${hostname} routed.`); }
+      await loadDomains();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The domain could not be updated.");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const loadCandidates = useCallback(async () => {
     const response = await fetch(`/api/deployments/${deploymentId}/rollback-candidates`, { cache: "no-store" });
     const result = await readApiJson<Candidate[]>(response);
@@ -104,7 +139,13 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
 
   // Candidates load on demand from the tab click rather than in an effect, matching the previous
   // explicit Rollback action and avoiding a synchronous setState inside an effect.
-  const selectTab = (next: Tab) => { setTab(next); if (next === "History") void loadCandidates(); };
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    if (next === "History") void loadCandidates();
+    // Loaded on tab entry rather than with the page, so a deployment with no domains costs one request
+    // only when the tab is actually opened.
+    if (next === "Domains") void loadDomains();
+  };
 
   const act = async (action: "stop" | "restart" | "redeploy" | "rollback") => {
     if (action === "rollback" && !rollbackTarget) return;
@@ -167,7 +208,7 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
       <span>Created {stamp(detail.createdAt)}</span>
     </div>
 
-    <div className="tabs" role="tablist">{tabs.map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "tab active" : "tab"} onClick={() => selectTab(item)} key={item}>{item}</button>)}</div>
+    <div className="tabs" role="tablist">{tabs.filter((item) => item !== "Domains" || detail.target === "remote").map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "tab active" : "tab"} onClick={() => selectTab(item)} key={item}>{item}</button>)}</div>
 
     {tab === "Overview" && <>
       <section className="panel detail-section overview-panel"><div className="panel-header"><h2>Deployment overview</h2></div><Rows items={[
@@ -262,11 +303,57 @@ export default function DeploymentDetail({ deploymentId }: { deploymentId: strin
         ["Memory limit", detail.environment.memoryLimit],
         ["Run migrations", detail.environment.runMigrations ? "Yes" : "No"],
       ]} /></section>
-      <section className="panel detail-section"><div className="panel-header"><h2>Security</h2></div><Rows items={[
+    </>}
+
+    {tab === "Domains" && detail.target === "remote" && <>
+      <section className="panel detail-section"><div className="panel-header"><h2>Add a hostname</h2></div>
+        <form className="project-form" onSubmit={(event) => { event.preventDefault(); void domainAction("create"); }}>
+          <label>Hostname<input required value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder="app.example.com" spellCheck={false} autoComplete="off" inputMode="url" />
+            <span className="form-note">A name only. A protocol, path, port, or wildcard is refused rather than rewritten.</span>
+          </label>
+          <label>TLS
+            <select value={tlsMode} onChange={(event) => setTlsMode(event.target.value)}>
+              <option value="internal_ca">Local certificate authority — real HTTPS, trusted by installing the proxy root</option>
+              <option value="automatic">Automatic — asks Let&apos;s Encrypt, needs DNS pointing at this server</option>
+              <option value="none">None — plain HTTP on port 80</option>
+            </select>
+            <span className="form-note">Automatic HTTPS needs the server reachable on port 80 with DNS already pointing at it.</span>
+          </label>
+          <label className="deployment-checkbox"><input type="checkbox" checked={allowLocal} onChange={(event) => setAllowLocal(event.target.checked)} />Allow a localhost name
+            <span className="form-note">Off by default. Only useful when you reach the server from the same machine.</span>
+          </label>
+          <div className="form-actions"><button type="submit" className="primary-button" disabled={!canAct || !hostname.trim()}>Route hostname</button></div>
+        </form>
+      </section>
+
+      <section className="panel table-panel"><div className="panel-header"><h2>Routed hostnames</h2><button className="secondary-button" onClick={() => void loadDomains()}>Refresh</button></div>
+        {domains.length ? <div className="table-wrap"><table><thead><tr><th>Status</th><th>Hostname</th><th>TLS</th><th>Upstream</th><th>Checked</th><th /></tr></thead><tbody>{domains.map((domain) => <tr key={domain.id}>
+          <td><Badge value={domain.status} tone={statusTone(domain.status === "active" ? "running" : domain.status === "failed" ? "failed" : "pending")} /><span className="muted-cell">{domain.statusMessage}</span></td>
+          <td className="mono-cell">{domain.hostname}</td>
+          <td>{domain.tlsEnabled && domain.tlsMode !== "none" ? domain.tlsMode.replace("_", " ") : "plain http"}</td>
+          <td className="mono-cell">{domain.upstreamPort ? `127.0.0.1:${domain.upstreamPort}` : "—"}</td>
+          <td className="muted-cell">{stamp(domain.lastCheckedAt)}</td>
+          <td className="deployment-row-actions">
+            <button className="text-button" onClick={() => void domainAction(domain.status === "disabled" ? "enable" : "disable", domain.id)} disabled={!canAct}>{domain.status === "disabled" ? "Enable" : "Disable"}</button>
+            <button className="text-button deployment-danger-text" onClick={() => { if (window.confirm(`Remove ${domain.hostname} from the proxy?`)) void domainAction("delete", domain.id); }} disabled={!canAct}>Remove</button>
+          </td>
+        </tr>)}</tbody></table></div>
+          : <div className="state-block"><strong>No hostnames routed</strong><span>This deployment is reachable on its host port only. Add a hostname above to put a reverse proxy in front of it.</span></div>}
+      </section>
+
+      <section className="panel detail-section"><div className="panel-header"><h2>How this is served</h2></div><Rows items={[
+        ["Proxy", `Caddy on ${detail.server?.name || "the registered server"}`],
+        ["Published ports", "80 and 443 only"],
+        ["Upstream", `127.0.0.1:${detail.environment.hostPort} on the proxy host`],
+        ["Reloads", "Validated, then reloaded in place — other hostnames are not interrupted"],
+        ["Shared proxy", "One proxy serves every hostname on this server; removing the last hostname stops it"],
+      ]} /><p className="deployment-note">A hostname follows the environment, so a redeploy or a rollback keeps serving under the same name. It is withdrawn only when nothing on the environment is serving.</p></section>
+    </>}
+
+    <section className="panel detail-section"><div className="panel-header"><h2>Security</h2></div><Rows items={[
         ["Runtime secrets", runtime?.secretNames?.length ? `${runtime.secretNames.length} configured, encrypted at rest` : "None configured"],
         ["Credential exposure", "Never returned by the API or written to a log"],
         ["Host port mapping", "Loopback only, bound by the deployment engine"],
       ]} /><p className="deployment-note">Secret values are write-only. A stored secret is reported as Configured and is never displayed again.</p></section>
-    </>}
   </div>;
 }

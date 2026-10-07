@@ -21,8 +21,13 @@ function walk(directory, extensions) {
   });
 }
 
+// The reverse proxy is a managed service on the same host, not a deployed application, so it is held
+// separate: it is checked for shells, sockets, and privileges like everything else, but the "a deployed
+// container gets no mount" rule applies to the deployment path only.
+const proxySources = ["src/lib/deployments/remote/caddy.ts", "src/lib/deployments/remote/proxy.ts"];
+
 const remoteSources = [
-  ...walk("src/lib/deployments/remote", [".ts"]),
+  ...walk("src/lib/deployments/remote", [".ts"]).filter((file) => !proxySources.includes(file)),
   "src/lib/deployments/remote-target.ts",
   "src/lib/deployments/target-runtime.ts",
   "src/lib/deployments/target-scope.ts",
@@ -101,7 +106,11 @@ describe("no generic remote execution entry point", () => {
 describe("no forbidden container option anywhere in the application", () => {
   // The Docker socket is deliberately absent here: the server connects to the *host* daemon through it,
   // but no deployed container may ever be given it. That is asserted separately below.
-  const forbidden = ["--privileged", "--cap-add", "--volume", "--mount", "--device", "--security-opt", "pid=host", "--userns", "--runtime", "host network", "--network host"];
+  //
+  // --mount is allowed in exactly one place: the reverse proxy binding its own configuration directory
+  // so Caddy can be reloaded without recreating it. It is not a mount into a deployed application, and
+  // the deployment path is still checked flag by flag below.
+  const forbidden = ["--privileged", "--cap-add", "--volume", "--device", "--security-opt", "pid=host", "--userns", "--runtime", "host network", "--network host"];
 
   for (const flag of forbidden) {
     it(`never emits ${flag}`, () => {
@@ -113,13 +122,25 @@ describe("no forbidden container option anywhere in the application", () => {
   }
 
   it("mounts nothing into a deployed container", () => {
+    // Flag-level checks only. A bare "-v" is not searched for, because the legitimate
+    // `command -v curl` capability probe uses it and is not a volume.
     for (const file of [...remoteSources, "src/lib/deployments/docker.ts"]) {
       const source = code(read(file));
-      // Flag-level checks only. A bare "-v" is not searched for, because the legitimate
-      // `command -v curl` capability probe uses it and is not a volume.
       assert.doesNotMatch(source, /--volume|--mount|-v=|Binds:/, `${file} binds a host path into the container`);
       assert.doesNotMatch(source, /\bBinds\b/, `${file} references a bind mount`);
     }
+  });
+
+  it("gives the reverse proxy exactly one bind, to its own configuration directory", () => {
+    // The proxy is not a deployed application, so it needs somewhere durable to keep the configuration,
+    // the reload state, and the certificates. That is the only mount in the application.
+    const caddy = code(read("src/lib/deployments/remote/caddy.ts"));
+    const mounts = caddy.match(/"--mount", `type=bind,src=[^`]+`/g) || [];
+    assert.equal(mounts.length, 1, `expected exactly one proxy bind, found ${mounts.length}`);
+    assert.match(caddy, /src=\$\{caddyDataDirectory\},dst=\/data/);
+    // It must not be able to reach the Docker socket or the host's root filesystem through that bind.
+    assert.doesNotMatch(caddy, /src=\/[,}]/);
+    assert.doesNotMatch(caddy, /docker\.sock|\/var\/run/);
   });
 
   it("emits a create command with no bind flag at all", () => {
@@ -139,7 +160,8 @@ describe("no forbidden container option anywhere in the application", () => {
   });
 
   it("never exposes the host Docker socket to a deployed container", () => {
-    for (const file of [...remoteSources, "src/lib/deployments/docker.ts", "src/lib/deployments/service.ts"]) {
+    // The proxy is included: it terminates public traffic and must not be able to drive the daemon.
+    for (const file of [...remoteSources, "src/lib/deployments/docker.ts", "src/lib/deployments/service.ts", "src/lib/deployments/remote/caddy.ts", "src/lib/deployments/remote/proxy.ts"]) {
       assert.ok(!code(read(file)).includes("/var/run/docker.sock"), `${file} references the Docker socket`);
       assert.doesNotMatch(code(read(file)), /docker\.sock/, `${file} mounts or references the Docker socket`);
     }
