@@ -3,49 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { clampIndex, filterCommands, initialPaletteState, paletteAction, paletteQueryChanged, reducePalette, type PaletteState, type PaletteCommandLike } from "@/lib/command-palette";
-
-export type ShellNavId = "overview" | "projects" | "terminal" | "git" | "deployments" | "tasks" | "notes" | "github" | "repositories" | "pull-requests" | "issues" | "docker" | "servers" | "system" | "settings";
-
-export const navGroups = [
-  { label: "Workspace", items: [["Overview", "overview"], ["Projects", "projects"], ["Terminal", "terminal"], ["Git", "git"], ["Tasks", "tasks"], ["Notes", "notes"]] },
-  { label: "Development", items: [["GitHub", "github"], ["Repositories", "repositories"], ["Pull Requests", "pull-requests"], ["Issues", "issues"]] },
-  { label: "Infrastructure", items: [["Deployments", "deployments"], ["Docker", "docker"], ["Servers", "servers"], ["System", "system"]] },
-] as const;
-
-// The routed section a nav id resolves to. The sidebar link and a palette command must land in exactly
-// the same place, so both read this one table instead of each deciding for itself.
-const routeSections: { prefix: string; page: ShellNavId; title: string }[] = [
-  { prefix: "/deployments", page: "deployments", title: "Deployments" },
-  { prefix: "/servers", page: "servers", title: "Servers" },
-  { prefix: "/projects", page: "projects", title: "Projects" },
-  { prefix: "/github", page: "github", title: "GitHub" },
-  { prefix: "/git", page: "git", title: "Git" },
-  { prefix: "/terminal", page: "terminal", title: "Terminal" },
-  { prefix: "/system", page: "system", title: "System" },
-];
-
-function sectionFor(pathname: string) {
-  return routeSections.find((section) => pathname === section.prefix || pathname.startsWith(`${section.prefix}/`));
-}
-
-/**
- * Resolves a workspace id to the href the matching sidebar link would use.
- *
- * On the hash workspace every id is a fragment. On a routed section its own id is a real path and every
- * other id leaves the section for `/#id`, because changing only the fragment of the current route would
- * open nothing. Reading `window` here is safe: this is called when a command executes, never while
- * rendering.
- */
-export function commandTargetHref(id: string, pathname = typeof window === "undefined" ? "/" : window.location.pathname) {
-  const section = sectionFor(pathname);
-  if (section && id !== section.page) return `/#${id}`;
-  if (section) return section.prefix;
-  return `#${id}`;
-}
+import { commandTargetHref, navGroups, sectionFor, type ShellNavId } from "@/lib/navigation";
 
 /** Navigates using the same target resolution as the sidebar, so routing is never duplicated here. */
 export function navigateToWorkspace(id: string) {
-  window.location.assign(commandTargetHref(id));
+  window.location.assign(commandTargetHref(id, window.location.pathname));
 }
 
 export type PaletteCommand = PaletteCommandLike & { group: string; run: () => void };

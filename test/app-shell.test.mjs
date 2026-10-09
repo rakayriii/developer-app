@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { allNavigationTargets, commandTargetHref, isKnownTarget, navGroups, routeSections, sectionFor } from "../src/lib/navigation.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -53,8 +54,8 @@ describe("app shell is the single shell", () => {
     // The section a nav item points at is the one link that does not leave the route, so it is the
     // one link that must exist. /deployments used to be the only such page; /projects, /servers,
     // /github, /git, /terminal, and /system were all 404s from their own sibling pages.
-    const shell = read("src/components/app-shell.tsx");
-    const declared = [...shell.matchAll(/\{ prefix: "([^"]+)"/g)].map((match) => match[1]);
+    // The registry itself, not a regex over whichever file currently happens to hold it.
+    const declared = routeSections.map((section) => section.prefix);
     assert.ok(declared.length > 0, "no routed sections declared");
     for (const prefix of declared) {
       assert.ok(existsSync(path.join(root, "src/app", prefix.replace(/^\//, ""), "page.tsx")), `no page for ${prefix}`);
@@ -94,5 +95,72 @@ describe("database outage is classified, not swallowed", () => {
       const source = read(file);
       assert.doesNotMatch(source, /items:\s*\[\]/, `${file} would answer with an empty array during an outage`);
     }
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Regression: a browser reached /admin/dashboard#overview and saw a Next.js 404 inside the shell.
+// That path is not a Developer OS route and is produced by nothing in the application; it was a stale
+// browser target. The defect it exposed is that an unknown path rendered a dead end instead of landing
+// on the workspace home.
+// -------------------------------------------------------------------------------------------
+
+describe("no navigation target points outside the routes Developer OS owns", () => {
+  // Exercises the real registry the sidebar, the palette, and the quick links all share. Reading
+  // app-shell.tsx as text could not show what it actually resolves to.
+
+  it("resolves every sidebar entry to a known prefix or a home hash", () => {
+    // From inside a routed section, and from home: both are states a real click can happen in.
+    for (const pathname of ["/", "/deployments", "/servers/deployments-1", "/github/owner/repo"]) {
+      for (const group of navGroups) {
+        for (const [, id] of group.items) {
+          const href = commandTargetHref(id, pathname);
+          assert.ok(isKnownTarget(href), `${href} (from ${pathname}, nav ${id}) is not a route this app owns`);
+        }
+      }
+    }
+  });
+
+  it("never produces /admin/dashboard or any other invented prefix", () => {
+    // A direct assertion on the reported symptom, so a future change cannot quietly reintroduce it.
+    const produced = allNavigationTargets();
+    assert.ok(produced.length > 0, "there must be navigation targets to check");
+    assert.ok(!produced.includes("/admin/dashboard"), "navigation must not target /admin/dashboard");
+    for (const href of produced) {
+      assert.ok(isKnownTarget(href), `${href} is not a route this app serves`);
+      assert.doesNotMatch(href, /^\/admin(\/|$)/, `${href} points at a prefix this app does not serve`);
+    }
+  });
+
+  it("maps every route section prefix to a page that is actually routed", () => {
+    for (const section of routeSections) {
+      // A section must exist as a real page, otherwise its nav entry is a dead link.
+      assert.ok(existsSync(path.join(root, "src/app", section.prefix.replace(/^\//, ""), "page.tsx")), `${section.prefix} has no page.tsx`);
+    }
+  });
+
+  it("treats the home hash as the workspace home", () => {
+    assert.equal(commandTargetHref("overview", "/"), "#overview");
+    // Already at home, so a home destination is a fragment, not a path back to the same page.
+    assert.equal(commandTargetHref("projects", "/"), "#projects");
+    assert.equal(commandTargetHref("overview", "/deployments"), "/#overview");
+    assert.equal(commandTargetHref("deployments", "/deployments"), "/deployments");
+  });
+
+  it("recognises a deep path inside a section as that section", () => {
+    assert.equal(sectionFor("/deployments/abc123").prefix, "/deployments");
+    assert.equal(sectionFor("/github/owner/repo").prefix, "/github");
+    // A prefix that merely starts with the same letters is a different page, not that section.
+    assert.equal(sectionFor("/deploymentsomething"), undefined);
+    assert.equal(sectionFor("/admin/dashboard"), undefined);
+  });
+
+  it("rejects the reported path as a target rather than trying to serve it", () => {
+    assert.equal(isKnownTarget("/admin/dashboard"), false);
+    assert.equal(isKnownTarget("/admin"), false);
+    assert.equal(isKnownTarget("/deployments"), true);
+    assert.equal(isKnownTarget("/deployments/x"), true);
+    assert.equal(isKnownTarget("/#overview"), true);
+    assert.equal(isKnownTarget("#overview"), true);
   });
 });
