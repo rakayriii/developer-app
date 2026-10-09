@@ -18,6 +18,7 @@ function summarize(report: ReconcileReport | null) {
   if (!report) {
     return {
       ran: false,
+      dependencies: { database: "unavailable", docker: "unavailable" },
       outcome: "unknown",
       startedAt: null,
       finishedAt: null,
@@ -41,6 +42,7 @@ function summarize(report: ReconcileReport | null) {
   }
   return {
     ran: true,
+    dependencies: report.dependencies,
     outcome: report.outcome,
     startedAt: report.startedAt,
     finishedAt: report.finishedAt,

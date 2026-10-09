@@ -17,6 +17,7 @@ type Backups = { directory: string; encryptionConfigured: boolean; backups: { id
 
 export type ReliabilityReport = {
   ran: boolean;
+  dependencies: { database: "ok" | "unavailable"; docker: "ok" | "unavailable" };
   outcome: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -60,6 +61,19 @@ const ago = (value: string | null | undefined) => {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   return `${Math.floor(seconds / 3600)}h ago`;
 };
+
+/**
+ * A dependency's state, as measured by the run rather than inferred.
+ *
+ * "Unknown" when no run has happened, which is deliberately different from "reachable".
+ */
+function dependency(ran: boolean | undefined, value: "ok" | "unavailable" | undefined) {
+  if (!ran) return "Unknown";
+  if (value === "ok") return "Reachable";
+  return "Unavailable";
+}
+
+const countBy = (findings: readonly Finding[], target: "local" | "remote") => findings.filter((finding) => finding.target === target).length;
 
 /** The remediation that is safe to offer for each finding. Only corrections are automated. */
 function remediation(finding: Finding) {
@@ -140,7 +154,8 @@ export default function ReliabilitySummary() {
     }
   };
 
-  const outstanding = (report?.findings ?? []).filter((finding) => finding.outcome !== "healthy");
+  const allFindings = report?.findings ?? [];
+  const outstanding = allFindings.filter((finding) => finding.outcome !== "healthy");
   const lastBackup = backups?.backups?.find((entry) => entry.result === "ok") ?? null;
 
   return <section className="system-section reliability-section">
@@ -158,9 +173,12 @@ export default function ReliabilitySummary() {
 
     <dl className="reliability-facts">
       <div><dt>Last check</dt><dd>{report?.ran ? ago(report.finishedAt) : "Never"}{report?.ran ? <small> · {outcomeLabel[report.outcome] ?? report.outcome}</small> : null}</dd></div>
+      <div><dt>PostgreSQL</dt><dd>{dependency(report?.ran, report?.dependencies.database)}</dd></div>
+      <div><dt>Docker</dt><dd>{dependency(report?.ran, report?.dependencies.docker)}</dd></div>
+      <div><dt>Deployments</dt><dd>{report?.ran ? `${report.deploymentsInspected} checked · ${countBy(outstanding.concat(allFindings), "local")} local, ${countBy(outstanding.concat(allFindings), "remote")} remote` : "Unknown"}</dd></div>
+      <div><dt>Hostnames</dt><dd>{report?.ran ? `${report.domainsInspected} routed · ${outstanding.filter((finding) => finding.hostname).length} needing attention` : "Unknown"}</dd></div>
       <div><dt>Scheduled</dt><dd>{report?.schedulerEnabled ? `Every interval${report.skippedTicks ? ` · ${report.skippedTicks} skipped` : ""}` : report?.schedulerBlockedReason || "Not scheduled"}</dd></div>
-      <div><dt>Database</dt><dd>{report?.error?.code === "database_unavailable" ? "Unavailable" : report?.ran ? "Reachable" : "Unknown"}</dd></div>
-      <div><dt>Last backup</dt><dd>{lastBackup ? `${ago(lastBackup.createdAt)} · ${(lastBackup.sizeBytes / 1024 / 1024).toFixed(1)} MB` : "Never"}</dd></div>
+      <div><dt>Last backup</dt><dd>{lastBackup ? `${ago(lastBackup.createdAt)} · ${(lastBackup.sizeBytes / 1024 / 1024).toFixed(1)} MB${lastBackup.encrypted ? " · encrypted" : ""}` : "Never"}</dd></div>
     </dl>
 
     {!report?.ran ? <div className="system-unavailable"><strong>No reconciliation has run yet</strong><span>Run one to compare recorded state against what Docker and the network actually report.</span></div>

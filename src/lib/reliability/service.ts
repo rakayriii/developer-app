@@ -15,7 +15,7 @@
 //   - Single-flight. A second concurrent run is refused rather than interleaved with the first.
 
 import { prisma } from "@/lib/db";
-import { containerRuntime, imageExists, portAvailable } from "@/lib/deployments/docker.ts";
+import { containerRuntime, imageExists, localDaemonArchitecture, portAvailable } from "@/lib/deployments/docker.ts";
 import { openRemoteDeployment } from "@/lib/deployments/remote/server.ts";
 import { remoteContainerRuntime, remoteDockerImageExists, remotePortOwner } from "@/lib/deployments/remote/docker.ts";
 import { caddyContainerName, caddyReadConfigCommand } from "@/lib/deployments/remote/caddy.ts";
@@ -37,6 +37,13 @@ import {
 
 export type ReconcileReport = {
   startedAt: string;
+  /**
+   * Whether the dependencies a run needs actually answered, measured rather than inferred.
+   *
+   * "ok" means the dependency was reached during this run. "unavailable" means it was not, which is
+   * different from a run that found nothing wrong.
+   */
+  dependencies: { database: "ok" | "unavailable"; docker: "ok" | "unavailable" };
   finishedAt: string;
   durationMs: number;
   dryRun: boolean;
@@ -196,6 +203,7 @@ async function runReconcile(options: { userId?: string; dryRun?: boolean; budget
 
   const report: ReconcileReport = {
     startedAt: startedAt.toISOString(),
+    dependencies: { database: "unavailable", docker: "unavailable" },
     finishedAt: startedAt.toISOString(),
     durationMs: 0,
     dryRun,
@@ -214,9 +222,12 @@ async function runReconcile(options: { userId?: string; dryRun?: boolean; budget
   const remaining = () => Math.max(0, deadline - Date.now());
 
   try {
-    // A database outage is a dependency failure, not a finding about deployments. It is reported as such
-    // and nothing is concluded.
+    // The probe both waits for and measures: a database that answers here is one this run could read.
+    // An outage is a dependency failure, not a finding about deployments, so it is reported as such and
+    // nothing is concluded.
     const deployments = await prisma.deployment.findMany({ where: { id: "__reconcile_probe__" }, select: { id: true } }).then(() => loadDeployments(options.userId));
+    report.dependencies.database = "ok";
+    report.dependencies.docker = (await localDaemonArchitecture()) ? "ok" : "unavailable";
 
     // Grouped by server so one SSH session covers every deployment on that host.
     const byServer = new Map<string, typeof deployments>();
