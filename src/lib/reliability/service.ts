@@ -92,6 +92,11 @@ export function reconciliationInProgress() {
   return activeRun !== null;
 }
 
+/** Reconciles only one owner's deployments. Ownership is enforced in the query, not by filtering after. */
+export async function reconcileForUser(userId: string, options: { dryRun?: boolean; waitForActive?: boolean } = {}) {
+  return reconcile({ ...options, userId });
+}
+
 /**
  * Runs reconciliation, or returns the run already in progress.
  *

@@ -14,6 +14,11 @@
 .env.example
 .env.local
 
+# backup artifacts (written outside the repository; excluded here as a second line of defence)
+backups/
+*.dump
+*.dump.enc
+
 # testing
 /coverage
 

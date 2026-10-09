@@ -4,6 +4,7 @@ import { readApiJson } from "@/lib/api/client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GpuMetrics, ProcessPage, SystemOverview, TemperatureMetrics } from "@/lib/system/types";
+import ReliabilitySummary from "@/components/reliability-summary";
 
 const emptyOverview: SystemOverview = { timestamp: "", system: null, cpu: null, memory: null, disk: [], gpu: null, temperature: null, network: [], errors: {} };
 const bytes = (value: number | undefined) => { if (value === undefined || !Number.isFinite(value)) return "Unavailable"; if (value < 1024) return `${value.toFixed(0)} B`; const units = ["KB", "MB", "GB", "TB"]; let amount = value; let index = -1; do { amount /= 1024; index += 1; } while (amount >= 1024 && index < units.length - 1); return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[index]}`; };
@@ -40,6 +41,7 @@ export default function SystemWorkspace() {
   const disk = overview.disk;
   const totalNetwork = useMemo(() => network.reduce((sum, item) => sum + item.receivedRateBytes + item.transmittedRateBytes, 0), [network]);
   return <div className="system-workspace"><div className="page-header system-page-header"><div><h1>System</h1><p>Live metrics from the Developer OS host.</p></div><div className={`system-connection system-connection-${state}`}><span className="status-dot" />{state === "live" ? "Live" : state === "loading" ? "Updating" : state === "disconnected" ? "Disconnected" : "Error"}<small>{lastUpdated}</small></div></div>{error && <div className="system-banner" role="alert"><strong>{state === "disconnected" ? "Authentication required" : "Monitoring unavailable"}</strong><span>{error}</span>{state === "error" && <button className="text-button" onClick={() => void loadOverview()}>Retry</button>}</div>}
+    <ReliabilitySummary />
     <div className="system-grid"><Section title="CPU" className="system-cpu"><div className="system-metric-grid"><Metric label="Usage" value={percent(cpu?.usagePercent)} detail={cpu ? `user ${percent(cpu.userPercent)} · system ${percent(cpu.systemPercent)}` : undefined} /><Metric label="Load average" value={cpu ? cpu.loadAverage.map((value) => value.toFixed(2)).join(" / ") : "Unavailable"} detail="1 / 5 / 15 min" /><Metric label="Cores" value={cpu ? `${cpu.logicalCores}${cpu.physicalCores ? ` / ${cpu.physicalCores}` : ""}` : "Unavailable"} detail="logical / physical" /><Metric label="Frequency" value={cpu?.frequencyMHz ? `${cpu.frequencyMHz} MHz` : "Unavailable"} /></div><Chart values={cpuHistory} label="CPU usage history" /></Section>
       <Section title="Memory" className="system-memory"><div className="system-metric-grid"><Metric label="Used" value={bytes(memory?.usedBytes)} detail={percent(memory?.usagePercent)} /><Metric label="Available" value={bytes(memory?.availableBytes)} /><Metric label="Free" value={bytes(memory?.freeBytes)} /><Metric label="Swap" value={memory ? `${bytes(memory.swapUsedBytes)} / ${bytes(memory.swapTotalBytes)}` : "Unavailable"} detail="used / total" /></div><Chart values={memoryHistory} label="Memory usage history" /></Section>
     </div>

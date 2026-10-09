@@ -1,0 +1,21 @@
+# Build context for the Dockerfile the deployment engine uses.
+#
+# The engine builds with `docker build -f <dockerfile> <repository root>`, so this file decides what the
+# daemon receives. Backups are written outside the repository entirely, but excluding them here as well
+# means a mistyped path cannot put an encrypted dump into an image layer.
+backups/
+*.dump
+*.dump.enc
+*.sql
+*.sql.gz
+.env
+.env.*
+!.env.example
+
+# Build output and dependencies. The daemon rebuilds these from source.
+node_modules
+.next
+.git
+.github
+*.tsbuildinfo
+npm-debug.log*
