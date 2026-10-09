@@ -1,6 +1,6 @@
 import type { ContainerRuntime, HealthCheckResult } from "./docker.ts";
 import { buildImage, containerDiagnostics, containerExists, containerRuntime, execReleaseCommand, healthCheck, imageExists, portAvailable, restartOwnedContainer, startContainer, stopOwnedContainer, verifyOwnedContainer } from "./docker.ts";
-import { containerName, localDaemonArchitecture } from "./docker.ts";
+import { containerName, localDaemonArchitecture, ownedContainerIds } from "./docker.ts";
 import { prisma } from "@/lib/db";
 import { openRemoteDeployment, RemoteDeploymentError } from "./remote/server.ts";
 import { remoteDeploymentOps } from "./remote-target.ts";
@@ -48,6 +48,12 @@ async function localDeploymentOps(stageLog: StageLogger): Promise<DeploymentOps>
     releaseHostPort: ({ environmentId, excludeDeploymentId }, secretValues) => releaseLocalHostPort(environmentId, excludeDeploymentId, stageLog, secretValues),
     // A local build already produced the image on this host, so there is nothing to transfer.
     transferImage: async () => undefined,
+    reclaimOwnContainer: async (name) => {
+      if (!name.startsWith("developer-os-")) return false;
+      if (!(await verifyOwnedContainer(name))) return false;
+      for (const id of await ownedContainerIds(name)) await stopOwnedContainer(id).catch(() => undefined);
+      return true;
+    },
     start: async (request: StartRequest) => {
       const name = containerName(request.projectSlug, request.environmentSlug, request.deploymentId);
       const containerId = await startContainer({ tag: request.tag, name, hostPort: request.hostPort, containerPort: request.containerPort, cpuLimit: request.cpuLimit, memoryLimit: request.memoryLimit, environment: request.variables });

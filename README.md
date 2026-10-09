@@ -181,6 +181,58 @@ and stop all reconcile the proxy, so withdrawal is immediate rather than waiting
 Removing the last hostname on a server stops and removes that server's proxy rather than leaving it
 holding ports 80 and 443 for nothing. Its data directory is kept, so certificates survive.
 
+## Production reliability and recovery
+
+Deployment records can disagree with reality: a daemon restarts, a container is removed by something else,
+a host becomes unreachable. Reconciliation compares the two and corrects only what is safe.
+
+- `src/lib/reliability/classify.ts` holds the decision table with no database and no Docker, so the
+  outcomes are exercised directly. Outcomes are `healthy`, `recovering`, `stale`, `unavailable`,
+  `unhealthy`, and `requires_attention`.
+- An observation that could not be made is **never** treated as a negative finding. A health probe that
+  timed out does not mark a healthy deployment as broken, and an unreachable remote host leaves the last
+  known state untouched rather than declaring a container failure it cannot substantiate.
+- Reconciliation only ever corrects recorded state. It never builds, deploys, starts, stops, restarts, or
+  removes anything, and it never deletes a deployment, a log, or a domain.
+- It is idempotent, single-flight (a concurrent run is refused with 409), bounded by a deadline, and
+  supports a dry run that applies nothing.
+- It starts from `src/instrumentation.ts` on one timer, after waiting for the database and Docker. Set
+  `RECONCILE_ON_START=0` to disable it.
+
+### Architecture compatibility
+
+A built image is compared against the architecture of the host that must run it, after the build and
+**before** the transfer. A mismatch stops the deployment with `architecture_mismatch` instead of
+producing a container that dies on its first instruction. `x86_64` and `amd64`, `aarch64` and `arm64`
+reconcile to one canonical name, and an architecture that cannot be determined is reported rather than
+assumed compatible.
+
+Cross-architecture deployment is not claimed: this build host registers no binfmt emulation handlers, so a
+mismatch fails early with instructions rather than pretending to support it.
+
+### Health signals
+
+Five measurements, kept apart: the image's own Docker `HEALTHCHECK`, Developer OS's HTTP health check,
+container state, reverse-proxy status, and TLS certificate status. Only the application's own HTTP answer
+decides the recorded health. An image whose `HEALTHCHECK` probes the wrong port shows `unhealthy` in
+Docker while the application serves perfectly, and that must not mark the deployment as broken.
+
+The GameVault image is exactly that case: its baked-in `HEALTHCHECK` probes the FrankenPHP admin port
+(2019), which `php-server` mode does not serve. That is a property of that image and is left alone.
+
+### Backup and restore
+
+A `pg_dump` in custom format taken by `docker exec` with an argument array and no shell, so no database
+password appears in argv, in the environment, or in the artifact. Artifacts live outside the repository at
+`0600`, with a sha256 and a manifest recorded beside them, and are excluded from the Docker build context.
+
+Restore is never automatic. The only restore path loads a dump into a throwaway database, verifies it, and
+drops it again; there is no endpoint that can overwrite live data.
+
+**Every encrypted column depends on `SESSION_SECRET`.** A restored database whose `SESSION_SECRET` differs
+decrypts nothing, and it fails silently. Read [`docs/recovery.md`](docs/recovery.md) before relying on any
+backup, including how to check the key without printing a value, and what rollback cannot undo.
+
 ## API error contract
 
 Every API failure returns `application/json` with `{ code, message }` and an optional `details`

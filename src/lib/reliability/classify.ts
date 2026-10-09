@@ -99,9 +99,12 @@ export function classifyDeployment(observation: DeploymentObservation): Reconcil
   }
 
   // ---------------------------------------------------------------------------------------------
-  // A port held by something Developer OS does not own is never ours to act on.
+  // A port held by something Developer OS does not own is never ours to act on. It is only the primary
+  // finding when our own container is actually running: if it is absent or stopped then the record is
+  // stale on its own account, and reporting the foreign port first would hide that. It is also normal -
+  // a container we never created holds the port precisely because ours is gone.
   // ---------------------------------------------------------------------------------------------
-  if (observation.portHeldByForeignContainer && isLive(observation.recordedStatus)) {
+  if (observation.portHeldByForeignContainer && observation.containerObserved === "running" && isLive(observation.recordedStatus)) {
     return {
       ...base,
       outcome: "requires_attention",

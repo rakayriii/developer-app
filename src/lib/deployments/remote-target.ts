@@ -79,6 +79,16 @@ export function remoteDeploymentOps(deploymentId: string, context: RemoteDeploym
 
     transferImage,
 
+    reclaimOwnContainer: async (name, secretValues) => {
+      // Ownership is proven by the generated name pattern; anything else is left strictly alone.
+      if (!name.startsWith("developer-os-")) return false;
+      if (!(await existsByName(name))) return false;
+      await stageLog(deploymentId, "runtime", `Removing leftover container ${name} left by an attempt whose outcome was not observed.`, secretValues);
+      await remoteDockerStop(transport, name).catch(() => undefined);
+      await remoteDockerRemove(transport, name).catch(() => undefined);
+      return true;
+    },
+
     start: async (request: StartRequest) => {
       const path = remoteEnvironmentFilePath(request.deploymentId);
       const name = containerName(request.projectSlug, request.environmentSlug, request.deploymentId);

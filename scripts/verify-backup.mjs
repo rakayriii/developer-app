@@ -7,7 +7,7 @@
 //
 //   BACKUP_DIR=/tmp/opencode/backups node --experimental-strip-types --import ./scripts/register.mjs scripts/verify-backup.mjs
 import { readFileSync, existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { rm, readFile, stat, writeFile } from "node:fs/promises";
 
 process.env.BACKUP_DIR ||= "/tmp/opencode/backups";
 for (const file of [".env.local", ".env"]) {
@@ -70,7 +70,6 @@ step(2, "a real backup of the live database");
 // -------------------------------------------------------------------------------------------
 step(3, "the artifact is restrictive and contains no credential");
 {
-  const { stat, readFile } = await import("node:fs/promises");
   const record = created.length ? (await listBackups()).find((entry) => entry.id === created[0]) : null;
   const info = await stat(record.path);
   const mode = info.mode & 0o777;
@@ -117,7 +116,6 @@ step(4, "an intact backup verifies");
 // -------------------------------------------------------------------------------------------
 step(5, "a corrupt backup is rejected");
 {
-  const { writeFile, copyFile } = await import("node:fs/promises");
   const record = (await listBackups()).find((entry) => entry.id === created[0]);
   const corruptedPath = record.path.replace(/\.dump(\.enc)?$/, ".corrupt.dump");
   const original = await readFile(record.path);
@@ -138,7 +136,6 @@ step(5, "a corrupt backup is rejected");
   if (restoration.error?.code !== "backup_invalid") fail(`unexpected refusal code ${restoration.error?.code}`);
 
   await rm(corruptedPath, { force: true });
-  void copyFile;
 }
 
 // -------------------------------------------------------------------------------------------

@@ -209,6 +209,14 @@ describe("conditions reconciliation must not fix on its own", () => {
     assert.match(finding.summary, /left strictly alone/);
   });
 
+  it("reports a stale record ahead of a foreign port when our own container is gone", () => {
+    // A container we never created holds the port precisely because ours is gone. Leading with the
+    // foreign port would hide the stale record, which is the thing that actually needs correcting.
+    const finding = classifyDeployment(observation({ containerObserved: "absent", portHeldByForeignContainer: true }));
+    assert.equal(finding.outcome, "stale");
+    assert.equal(finding.code, "record_running_container_absent");
+  });
+
   it("does not demand attention for a missing image on a terminal record", () => {
     const finding = classifyDeployment(observation({ recordedStatus: "stopped", recordedHealth: "stopped", containerObserved: "absent", imagePresent: false }));
     assert.equal(finding.outcome, "healthy");

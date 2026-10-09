@@ -32,6 +32,14 @@ export type DeploymentOps = {
   releaseHostPort(request: HostPortRequest, secretValues: readonly string[]): Promise<void>;
   /** Streams a locally built image to the target. A no-op for local, which already has the image. */
   transferImage(tag: string, secretValues: readonly string[]): Promise<void>;
+  /**
+   * Removes a leftover container bearing this deployment's own generated name, if one exists.
+   *
+   * Called before creating one, so an attempt whose outcome was never observed - a timeout, a daemon
+   * restart, a lost connection - cannot turn into a second container. The name is passed in rather than a
+   * container id precisely so ownership is proven by the name: the caller supplies a name it generated.
+   */
+  reclaimOwnContainer(name: string, secretValues: readonly string[]): Promise<boolean>;
   start(request: StartRequest): Promise<{ containerId: string; containerName: string }>;
   runRelease(containerRef: string): Promise<void>;
   verifyHealth(hostPort: number, healthPath: string, timeoutMs: number, retries: number): Promise<HealthCheckResult>;

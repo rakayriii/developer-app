@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { runGit } from "@/lib/git/runner.ts";
 import { deploymentRepository } from "./config";
-import { containerExists, imageArchitecture as readImageArchitecture, imageTag, localDaemonArchitecture, portAvailable, DeploymentDockerError } from "./docker";
+import { containerExists, containerName as generatedContainerName, imageArchitecture as readImageArchitecture, imageTag, localDaemonArchitecture, portAvailable, DeploymentDockerError } from "./docker";
 import { architectureFailureReason, compareArchitectures, describeArchitecture } from "./architecture";
 import { discoverDockerfile } from "./dockerfile";
 import { withDeploymentLock } from "./lock";
@@ -61,6 +61,11 @@ export async function createDeployment(projectId: string, environmentId: string)
     const tag = imageTag(environment.project.slug, deployment.id);
     return prisma.deployment.update({ where: { id: deployment.id }, data: { imageTag: tag, remoteImageTag: environment.target === "remote" ? tag : null } });
   });
+}
+
+/** The container name this deployment's own container is generated to have. */
+function startContainerName(deployment: { project: { slug: string }; environment: { slug: string }; id: string }) {
+  return generatedContainerName(deployment.project.slug, deployment.environment.slug, deployment.id);
 }
 
 export async function deployDeployment(deploymentId: string) {
@@ -123,6 +128,17 @@ export async function deployDeployment(deploymentId: string) {
           stage = "remote_image";
           await stageLog(current.id, "remote_image", `Image ${current.imageTag} loaded on ${ops.serverName}.`, secrets);
         }
+
+        // A previous attempt on this same record may have created the container and then been cut off - a
+        // timeout, a daemon restart, a lost connection - leaving an outcome nobody observed. That leftover
+        // holds this deployment's own host port and is not recorded on any row, so it must be reclaimed
+        // before the port is checked. Ordering matters here: reclaiming afterwards would be too late,
+        // because the port check would already have refused on a container Developer OS owns.
+        //
+        // Ownership is proven by the name, which is generated from the project slug, the environment slug,
+        // and this deployment's id. A match is therefore this deployment's own container and not a
+        // coincidence, and nothing else is ever touched.
+        await ops.reclaimOwnContainer(startContainerName(current), secrets);
 
         stage = "port";
         await ops.releaseHostPort({ environmentId: current.environmentId, excludeDeploymentId: current.id, hostPort: current.environment.hostPort }, secrets);

@@ -32,6 +32,17 @@ export async function containerExists(containerId: string) { try { await docker(
 // Restarts only the supplied owned container. No flags are client-controlled.
 export async function restartOwnedContainer(containerId: string) { const result = await docker(["restart", "--time", "10", containerId], 256 * 1024, undefined, "Container restart"); return result.stdout.trim(); }
 
+/**
+ * The ids of every container carrying an exact generated name.
+ *
+ * Only used to remove a leftover this deployment owns. The name is anchored with ^/...$ so Docker's
+ * substring matching cannot widen the result to a similarly named container.
+ */
+export async function ownedContainerIds(expectedName: string): Promise<string[]> {
+  const ids = await docker(["ps", "-a", "--filter", `name=^/${expectedName}$`, "--format", "{{.ID}}"], 128 * 1024).then((result) => result.stdout.split("\n").map((line) => line.trim()).filter(Boolean)).catch(() => [] as string[]);
+  return ids;
+}
+
 // Ownership proof: the generated container name must still exist and must match the recorded one.
 export async function verifyOwnedContainer(expectedName: string) {
   const names = await docker(["ps", "-a", "--filter", `name=^/${expectedName}$`, "--format", "{{.Names}}"], 128 * 1024).then((result) => result.stdout.split("\n").map((line) => line.trim()).filter(Boolean)).catch(() => [] as string[]);
