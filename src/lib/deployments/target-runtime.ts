@@ -1,6 +1,6 @@
 import type { ContainerRuntime, HealthCheckResult } from "./docker.ts";
 import { buildImage, containerDiagnostics, containerExists, containerRuntime, execReleaseCommand, healthCheck, imageExists, portAvailable, restartOwnedContainer, startContainer, stopOwnedContainer, verifyOwnedContainer } from "./docker.ts";
-import { containerName } from "./docker.ts";
+import { containerName, localDaemonArchitecture } from "./docker.ts";
 import { prisma } from "@/lib/db";
 import { openRemoteDeployment, RemoteDeploymentError } from "./remote/server.ts";
 import { remoteDeploymentOps } from "./remote-target.ts";
@@ -39,11 +39,12 @@ async function releaseLocalHostPort(environmentId: string, excludeDeploymentId: 
 }
 
 /** The Phase 8/9 local Docker implementation, built from the existing primitives. */
-function localDeploymentOps(stageLog: StageLogger): DeploymentOps {
+async function localDeploymentOps(stageLog: StageLogger): Promise<DeploymentOps> {
   return {
     target: "local",
     serverId: null,
     serverName: null,
+    targetArchitecture: await localDaemonArchitecture(),
     releaseHostPort: ({ environmentId, excludeDeploymentId }, secretValues) => releaseLocalHostPort(environmentId, excludeDeploymentId, stageLog, secretValues),
     // A local build already produced the image on this host, so there is nothing to transfer.
     transferImage: async () => undefined,
@@ -72,7 +73,7 @@ function localDeploymentOps(stageLog: StageLogger): DeploymentOps {
  * availability, a live SSH handshake with the pinned host key, and the remote capability probes.
  */
 export async function resolveDeploymentOps(deployment: TargetBinding, stageLog: StageLogger): Promise<DeploymentOps> {
-  if (deployment.target !== "remote") return localDeploymentOps(stageLog);
+  if (deployment.target !== "remote") return await localDeploymentOps(stageLog);
   const serverId = deployment.serverId ?? deployment.environment.serverId;
   if (!serverId) throw new RemoteDeploymentError("server_not_found", "This remote deployment is not bound to a server.", 409);
   const context = await openRemoteDeployment(deployment.project.userId, serverId);

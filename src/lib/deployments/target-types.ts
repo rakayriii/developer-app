@@ -22,6 +22,12 @@ export type DeploymentOps = {
   target: "local" | "remote";
   serverId: string | null;
   serverName: string | null;
+  /**
+   * The canonical architecture of the host this deployment will run on, or null when it is not known.
+   * The engine compares the built image against this before transferring anything. Null means "not
+   * detected", which is reported rather than assumed compatible.
+   */
+  targetArchitecture: string | null;
   /** Releases the host port on this target. Only Developer OS containers are ever touched. */
   releaseHostPort(request: HostPortRequest, secretValues: readonly string[]): Promise<void>;
   /** Streams a locally built image to the target. A no-op for local, which already has the image. */

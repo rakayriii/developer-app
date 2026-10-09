@@ -7,6 +7,12 @@ export function imageTag(projectSlug: string, deploymentId: string) { return `de
 export function containerName(projectSlug: string, environmentSlug: string, deploymentId: string) { return `developer-os-${projectSlug}-${environmentSlug}-${deploymentId.slice(0, 12)}`.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 120); }
 export async function buildImage(repositoryRoot: string, dockerfilePath: string, tag: string, onOutput?: (chunk: string) => void) { const result = await docker(["build", "-f", dockerfilePath, "-t", tag, repositoryRoot], 4 * 1024 * 1024, onOutput, "Docker build"); return `${result.stdout}${result.stderr}`; }
 export async function imageExists(tag: string) { try { await docker(["image", "inspect", tag], 64 * 1024); return true; } catch { return false; } }
+// The architecture the image was actually built for, read from the local daemon. Only the format string is
+// a fixed literal; the tag is the engine-generated image reference. Returns null when it cannot be read,
+// which the caller reports as unknown rather than treating as compatible.
+export async function imageArchitecture(tag: string): Promise<string | null> { try { const result = await docker(["image", "inspect", "--format", "{{.Architecture}}", tag], 64 * 1024); return result.stdout.trim().split("\n").pop()?.trim() || null; } catch { return null; } }
+// The architecture of the local Docker daemon, used as the target when a deployment stays on this host.
+export async function localDaemonArchitecture(): Promise<string | null> { try { const result = await docker(["info", "--format", "{{.Architecture}}"], 64 * 1024); return result.stdout.trim().split("\n").pop()?.trim() || null; } catch { return null; } }
 export async function portAvailable(port: number) { return new Promise<boolean>((resolve) => { const server = net.createServer(); server.once("error", () => resolve(false)); server.listen(port, "127.0.0.1", () => server.close(() => resolve(true))); }); }
 
 export function containerRunArguments(options: { tag: string; name: string; hostPort: number; containerPort: number; cpuLimit: string; memoryLimit: string; environment: Record<string, string> }) {

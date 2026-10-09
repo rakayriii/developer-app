@@ -22,6 +22,7 @@ import {
 import { remoteCreateCommand } from "./remote/args.ts";
 import { remoteEnvironmentFilePath, renderEnvironmentFile } from "./remote/env-file.ts";
 import type { DeploymentOps, StageLogger, StartRequest } from "./target-types.ts";
+import { canonicalArchitecture } from "./architecture.ts";
 
 
 /** The Phase 8/9 local Docker implementation of the operation set. Reuses the existing primitives. */
@@ -47,6 +48,9 @@ export function remoteDeploymentOps(deploymentId: string, context: RemoteDeploym
     target: "remote",
     serverId: server.id,
     serverName: server.name,
+    // Recorded by the last successful server probe. Null when the server has never been probed, which
+    // the preflight reports rather than assuming is fine.
+    targetArchitecture: canonicalArchitecture(server.architecture),
 
     releaseHostPort: async ({ environmentId, excludeDeploymentId, hostPort }, secretValues) => {
       // A host port binds once per Docker host. Incumbents recorded against *this* server are ours and

@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { runGit } from "@/lib/git/runner.ts";
 import { deploymentRepository } from "./config";
-import { containerExists, imageTag, portAvailable, DeploymentDockerError } from "./docker";
+import { containerExists, imageArchitecture as readImageArchitecture, imageTag, localDaemonArchitecture, portAvailable, DeploymentDockerError } from "./docker";
+import { architectureFailureReason, compareArchitectures, describeArchitecture } from "./architecture";
 import { discoverDockerfile } from "./dockerfile";
 import { withDeploymentLock } from "./lock";
 import { DeploymentConflictError } from "./errors";
@@ -91,6 +92,28 @@ export async function deployDeployment(deploymentId: string) {
         stage = "build";
         const buildOutput = await buildImage(state.repositoryRoot, state.dockerfile.path, current.imageTag, (chunk) => { void stageLog(current.id, "build", chunk, secrets); });
         if (buildOutput) await stageLog(current.id, "build", "Docker image build completed.", secrets);
+
+        // Architecture is checked after the build, because only a built image has an architecture, and
+        // before the transfer, because transferring an image the target cannot execute wastes minutes and
+        // leaves a daemon full of images that will never run. Cross-architecture emulation is not used:
+        // this build host has no binfmt handlers registered, so a mismatch is a hard stop with
+        // instructions rather than a silent attempt.
+        stage = "architecture";
+        const imageArchitecture = await readImageArchitecture(current.imageTag);
+        // A remote target's architecture comes from the server record and may legitimately be unknown, for
+        // instance when the server has never been probed. That null must survive to the comparison: falling
+        // back to the local host's architecture here would substitute this machine's CPU for the target's
+        // and quietly approve a deployment that cannot run.
+        const targetArchitecture = ops.targetArchitecture ?? (ops.target === "local" ? await localDaemonArchitecture() : null);
+        const architecture = compareArchitectures(imageArchitecture, targetArchitecture);
+        await stageLog(current.id, "architecture", `Architecture preflight: ${describeArchitecture(imageArchitecture, targetArchitecture)}.`, secrets);
+        if (!architecture.compatible) {
+          throw new StagedFailure(
+            "architecture",
+            architectureFailureReason(architecture, imageArchitecture, targetArchitecture, ops.target === "remote" ? ops.serverName : null),
+            architecture.reason === "server_unknown" ? "server_architecture_unknown" : "architecture_mismatch",
+          );
+        }
 
         // Transfer is a no-op for a local target; a remote target streams the image over pinned SSH.
         if (ops.target === "remote") {

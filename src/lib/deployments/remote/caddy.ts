@@ -82,6 +82,10 @@ export const caddyValidateCommand = (name: string) => remoteCommand("docker", "e
 // trust. Empty output simply means the authority has not been created yet.
 export const caddyReadRootCertificateCommand = (name: string) => remoteCommand("docker", "exec", assertRemoteName(name), "cat", caddyRootCertificatePath);
 
+// Reads the configuration Caddy is actually running, so drift between the desired configuration and the
+// applied one can be detected rather than assumed. Empty output simply means no configuration is loaded.
+export const caddyReadConfigCommand = (name: string) => remoteCommand("docker", "exec", assertRemoteName(name), "cat", caddyConfigPath);
+
 export const caddyRemoveDataCommand = remoteCommand("rm", "-rf", caddyDataDirectory);
 
 // Health verification goes through the proxy from the host itself, so the request path that matters is

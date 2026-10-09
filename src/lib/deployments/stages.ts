@@ -1,10 +1,10 @@
 // Deployment stages. Extracted so the local and remote target adapters and the engine can all refer to
 // the same set without importing each other.
 
-export type Stage = "validation" | "build" | "transfer" | "remote_image" | "container_startup" | "port" | "release_command" | "health_check" | "runtime" | "stop" | "restart" | "rollback";
+export type Stage = "validation" | "build" | "architecture" | "transfer" | "remote_image" | "container_startup" | "port" | "release_command" | "health_check" | "runtime" | "stop" | "restart" | "rollback";
 
 export const deploymentStages: readonly Stage[] = [
-  "validation", "build", "transfer", "remote_image", "container_startup",
+  "validation", "build", "architecture", "transfer", "remote_image", "container_startup",
   "port", "release_command", "health_check", "runtime", "stop", "restart", "rollback",
 ];
 
@@ -13,6 +13,7 @@ export const deploymentStages: readonly Stage[] = [
 export const stageStream: Record<Stage, string> = {
   validation: "validation",
   build: "build",
+  architecture: "build",
   transfer: "transfer",
   remote_image: "remote_image",
   container_startup: "container",
